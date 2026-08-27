@@ -1,0 +1,7 @@
+{
+  "name": "@caim/workflow",
+  "version": "2.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}
