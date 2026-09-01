@@ -55,6 +55,9 @@ export interface RetrievalPlan {
   allow_vault_restricted: boolean;
   budget_max_records: number;
   budget_max_tokens: number;
+  composition_safe_only?: boolean;
+  allowed_risk_bands?: Array<'LOW' | 'LOW_RISK' | 'MEDIUM' | 'HIGH' | 'HIGH_RISK' | 'CRITICAL'>;
+  allowed_lifecycle_statuses?: string[];
   created_at: string;
 }
 

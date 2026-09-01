@@ -22,6 +22,8 @@ import {
   ChevronDown,
   ChevronRight
 } from 'lucide-react';
+import { FieldHelpTooltip } from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 interface Requirement {
   requirementId: string;
@@ -134,11 +136,11 @@ export const TraceabilityDodWorkflowView: React.FC = () => {
     setLoading(true);
     try {
       const [reqsRes, pathsRes, concRes, obsRes, qualRes] = await Promise.all([
-        fetch('/api/dev/traceability/requirements'),
-        fetch('/api/dev/traceability/acceptance-paths'),
-        fetch('/api/dev/traceability/lineage/conclusion/dec-quarantine-rce-001'),
-        fetch('/api/dev/traceability/lineage/observation/obs-github-repo-001'),
-        fetch('/api/dev/traceability/quality-targets')
+        authenticatedFetch('/api/dev/traceability/requirements'),
+        authenticatedFetch('/api/dev/traceability/acceptance-paths'),
+        authenticatedFetch('/api/dev/traceability/lineage/conclusion/dec-quarantine-rce-001'),
+        authenticatedFetch('/api/dev/traceability/lineage/observation/obs-github-repo-001'),
+        authenticatedFetch('/api/dev/traceability/quality-targets')
       ]);
 
       if (reqsRes.ok) setRequirements(await reqsRes.json());
@@ -162,7 +164,7 @@ export const TraceabilityDodWorkflowView: React.FC = () => {
   const handleRunAudit = async () => {
     setAuditing(true);
     try {
-      const res = await fetch('/api/dev/traceability/audit-run', { method: 'POST' });
+      const res = await authenticatedFetch('/api/dev/traceability/audit-run', { method: 'POST' });
       if (res.ok) {
         const report = await res.json();
         setAuditReport(report);
@@ -213,6 +215,7 @@ export const TraceabilityDodWorkflowView: React.FC = () => {
                   <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800">
                     P34 Verified
                   </span>
+                  <FieldHelpTooltip customTitle="Traceability & DoD Matrix" customDescription="Comprehensive bidirectional traceability linking product requirements to implementation code, automated test cases, and release-blocking security criteria." />
                 </h1>
                 <p className="text-sm text-slate-400 mt-0.5">
                   Authoritative RTM, 11 Epistemic Acceptance Paths, 8-Hop Lineage Resolution & Release Attestation

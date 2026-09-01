@@ -17,5 +17,6 @@ export * from './classification.ts';
 export * from './identity-resolution.ts';
 export * from './manual-review.ts';
 export * from './recursive-expansion.ts';
+export * from './autonomous-discovery-worker.ts';
 export * from './fixtures/index.ts';
 

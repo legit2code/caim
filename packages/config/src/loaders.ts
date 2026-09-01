@@ -23,6 +23,13 @@ export type ProviderAdapterStatus =
   | { status: 'READY'; credentialPresent: true }
   | { status: 'DISABLED_MISSING_CREDENTIAL'; credentialPresent: false; reason: string };
 
+function getEnv(key: string, fallback?: string): string | undefined {
+  if (typeof process !== 'undefined' && process.env && process.env[key] !== undefined) {
+    return process.env[key];
+  }
+  return fallback;
+}
+
 function parseBoolean(val: string | undefined, defaultValue: boolean): boolean {
   if (val === undefined || val === '') return defaultValue;
   return val.toLowerCase() === 'true' || val === '1';
@@ -33,13 +40,13 @@ function parseBoolean(val: string | undefined, defaultValue: boolean): boolean {
  */
 export function getFeatureFlags(): FeatureFlags {
   const raw = {
-    enableDynamicSandbox: parseBoolean(process.env.FEATURE_DYNAMIC_SANDBOX, true),
-    enableEvasionDetection: parseBoolean(process.env.FEATURE_EVASION_DETECTION, true),
-    enableTaintAnalysis: parseBoolean(process.env.FEATURE_TAINT_ANALYSIS, true),
-    enableHybridRAG: parseBoolean(process.env.FEATURE_HYBRID_RAG, true),
-    enableContinuousMonitoring: parseBoolean(process.env.FEATURE_CONTINUOUS_MONITORING, false),
-    enableAutomatedRemediation: parseBoolean(process.env.FEATURE_AUTOMATED_REMEDIATION, false),
-    enableModelCardAIBOM: parseBoolean(process.env.FEATURE_MODEL_CARD_AIBOM, true),
+    enableDynamicSandbox: parseBoolean(getEnv('FEATURE_DYNAMIC_SANDBOX'), true),
+    enableEvasionDetection: parseBoolean(getEnv('FEATURE_EVASION_DETECTION'), true),
+    enableTaintAnalysis: parseBoolean(getEnv('FEATURE_TAINT_ANALYSIS'), true),
+    enableHybridRAG: parseBoolean(getEnv('FEATURE_HYBRID_RAG'), true),
+    enableContinuousMonitoring: parseBoolean(getEnv('FEATURE_CONTINUOUS_MONITORING'), false),
+    enableAutomatedRemediation: parseBoolean(getEnv('FEATURE_AUTOMATED_REMEDIATION'), false),
+    enableModelCardAIBOM: parseBoolean(getEnv('FEATURE_MODEL_CARD_AIBOM'), true),
   };
 
   const parsed = FeatureFlagsSchema.safeParse(raw);
@@ -54,11 +61,11 @@ export function getFeatureFlags(): FeatureFlags {
  */
 export function getModelConfig(): ModelConfig {
   const raw = {
-    geminiModelDefault: process.env.GEMINI_MODEL_DEFAULT || 'gemini-2.5-flash',
-    geminiModelPro: process.env.GEMINI_MODEL_PRO || 'gemini-2.5-pro',
-    geminiEmbeddingModel: process.env.GEMINI_MODEL_EMBEDDING || 'text-embedding-004',
-    temperature: process.env.MODEL_TEMPERATURE ? parseFloat(process.env.MODEL_TEMPERATURE) : 0.2,
-    maxOutputTokens: process.env.MODEL_MAX_OUTPUT_TOKENS ? parseInt(process.env.MODEL_MAX_OUTPUT_TOKENS, 10) : 8192,
+    geminiModelDefault: getEnv('GEMINI_MODEL_DEFAULT', 'gemini-2.5-flash')!,
+    geminiModelPro: getEnv('GEMINI_MODEL_PRO', 'gemini-2.5-pro')!,
+    geminiEmbeddingModel: getEnv('GEMINI_MODEL_EMBEDDING', 'text-embedding-004')!,
+    temperature: getEnv('MODEL_TEMPERATURE') ? parseFloat(getEnv('MODEL_TEMPERATURE')!) : 0.2,
+    maxOutputTokens: getEnv('MODEL_MAX_OUTPUT_TOKENS') ? parseInt(getEnv('MODEL_MAX_OUTPUT_TOKENS')!, 10) : 8192,
   };
 
   const parsed = ModelConfigSchema.safeParse(raw);
@@ -77,8 +84,8 @@ export function getPublicConfig(): PublicConfig {
   const models = getModelConfig();
 
   const raw = {
-    env: (process.env.NODE_ENV as any) || 'development',
-    appUrl: process.env.APP_URL || 'http://localhost:3000',
+    env: (getEnv('NODE_ENV') as any) || 'development',
+    appUrl: getEnv('APP_URL', 'http://localhost:3000')!,
     platformVersion: '2.0.1',
     baseline: 'V2.0.1 Controlled Implementation Baseline',
     apiPrefix: '/api',
@@ -104,24 +111,24 @@ export function getServerConfig(): ServerConfig {
   const models = getModelConfig();
 
   const raw = {
-    env: (process.env.NODE_ENV as any) || 'development',
+    env: (getEnv('NODE_ENV') as any) || 'development',
     port: 3000,
     host: '0.0.0.0',
-    appUrl: process.env.APP_URL || 'http://localhost:3000',
-    geminiApiKey: process.env.GEMINI_API_KEY,
+    appUrl: getEnv('APP_URL', 'http://localhost:3000')!,
+    geminiApiKey: getEnv('GEMINI_API_KEY'),
     signing: {
-      keyId: process.env.SIGNING_KEY_ID || 'caim-v2-dev-key',
-      algorithm: (process.env.SIGNING_ALGORITHM as any) || 'Ed25519',
-      privateKey: process.env.SIGNING_PRIVATE_KEY,
-      publicKey: process.env.SIGNING_PUBLIC_KEY,
+      keyId: getEnv('SIGNING_KEY_ID', 'caim-v2-dev-key')!,
+      algorithm: (getEnv('SIGNING_ALGORITHM') as any) || 'Ed25519',
+      privateKey: getEnv('SIGNING_PRIVATE_KEY'),
+      publicKey: getEnv('SIGNING_PUBLIC_KEY'),
     },
     providers: {
-      githubToken: process.env.GITHUB_TOKEN,
-      huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY,
-      e2bApiKey: process.env.E2B_API_KEY,
-      sentryDsn: process.env.SENTRY_DSN,
-      supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      supabaseUrl: process.env.SUPABASE_URL,
+      githubToken: getEnv('GITHUB_TOKEN'),
+      huggingfaceApiKey: getEnv('HUGGINGFACE_API_KEY'),
+      e2bApiKey: getEnv('E2B_API_KEY'),
+      sentryDsn: getEnv('SENTRY_DSN'),
+      supabaseServiceKey: getEnv('SUPABASE_SERVICE_ROLE_KEY'),
+      supabaseUrl: getEnv('SUPABASE_URL'),
     },
     features,
     models,
@@ -140,19 +147,19 @@ export function getServerConfig(): ServerConfig {
 export function getWorkerConfig(workerDomain: string): WorkerConfig {
   const raw = {
     workerDomain,
-    concurrency: process.env.WORKER_CONCURRENCY ? parseInt(process.env.WORKER_CONCURRENCY, 10) : 4,
+    concurrency: getEnv('WORKER_CONCURRENCY') ? parseInt(getEnv('WORKER_CONCURRENCY')!, 10) : 4,
     heartbeatIntervalMs: 10000,
     taskTimeoutMs: 300000,
     sandboxMemoryLimitMb: 1024,
     isolatedProcess: true,
-    geminiApiKey: process.env.GEMINI_API_KEY,
+    geminiApiKey: getEnv('GEMINI_API_KEY'),
     providers: {
-      githubToken: process.env.GITHUB_TOKEN,
-      huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY,
-      e2bApiKey: process.env.E2B_API_KEY,
-      sentryDsn: process.env.SENTRY_DSN,
-      supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      supabaseUrl: process.env.SUPABASE_URL,
+      githubToken: getEnv('GITHUB_TOKEN'),
+      huggingfaceApiKey: getEnv('HUGGINGFACE_API_KEY'),
+      e2bApiKey: getEnv('E2B_API_KEY'),
+      sentryDsn: getEnv('SENTRY_DSN'),
+      supabaseServiceKey: getEnv('SUPABASE_SERVICE_ROLE_KEY'),
+      supabaseUrl: getEnv('SUPABASE_URL'),
     },
   };
 

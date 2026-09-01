@@ -20,8 +20,16 @@ import {
   Zap,
   Info
 } from 'lucide-react';
+import {
+  FieldHelpTooltip,
+  SecurityClassificationBadge,
+  RiskScoreBadge,
+  EpistemicStatusBadge
+} from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 interface RiskPolicyWorkflowViewProps {
+
   currentRole: string;
   onNavigateToWorkflow?: (workflow: string, params?: any) => void;
 }
@@ -30,7 +38,7 @@ export const RiskPolicyWorkflowView: React.FC<RiskPolicyWorkflowViewProps> = ({ 
   const [selectedModel, setSelectedModel] = useState<string>('caim-standard-risk-v2');
   const [selectedPolicy, setSelectedPolicy] = useState<string>('pol-enterprise-prod-v2');
   const [selectedAgentId, setSelectedAgentId] = useState<string>('agent-financial-analyst');
-  const [activeTab, setActiveTab] = useState<'decision' | 'dimensions' | 'rules' | 'recommendations' | 'usecases' | 'overrides'>('decision');
+  const [activeTab, setActiveTab] = useState<'decision' | 'dynamic' | 'dimensions' | 'rules' | 'recommendations' | 'usecases' | 'overrides'>('decision');
   const [evaluating, setEvaluating] = useState<boolean>(false);
   const [decisionResult, setDecisionResult] = useState<any | null>(null);
   const [overrideReason, setOverrideReason] = useState<string>('');
@@ -45,11 +53,10 @@ export const RiskPolicyWorkflowView: React.FC<RiskPolicyWorkflowViewProps> = ({ 
     setEvaluating(true);
     try {
       // Direct call to /api/dev/decision/run
-      const res = await fetch('/api/dev/decision/run', {
+      const res = await authenticatedFetch('/api/dev/decision/run', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Role': currentRole,
         },
         body: JSON.stringify({
           agent_version_id: selectedAgentId === 'agent-financial-analyst' ? 'av-fin-v100' : 'av-res-v090',
@@ -236,10 +243,10 @@ export const RiskPolicyWorkflowView: React.FC<RiskPolicyWorkflowViewProps> = ({ 
                   {decisionResult.outcome}
                 </span>
                 <span className="text-slate-500">•</span>
-                <span className="text-xs font-bold text-slate-200">Overall Score: {decisionResult.overall_score}/100</span>
-                <span className="text-slate-500">•</span>
-                <span className="text-xs font-bold text-cyan-400">Risk Band: {decisionResult.risk_band}</span>
+                <RiskScoreBadge score={decisionResult.overall_score} riskBand={decisionResult.risk_band} />
+                <FieldHelpTooltip fieldKey="risk_score" />
               </div>
+
             </div>
 
             <div className="flex items-center space-x-2 font-mono text-xs text-slate-400">
@@ -256,6 +263,20 @@ export const RiskPolicyWorkflowView: React.FC<RiskPolicyWorkflowViewProps> = ({ 
               }`}
             >
               Decision Breakdown
+            </button>
+            <button
+              onClick={() => setActiveTab('dynamic')}
+              className={`px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center space-x-1.5 ${
+                activeTab === 'dynamic' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <Zap className="w-3 h-3 text-amber-400" />
+              <span>Static vs Dynamic Verification</span>
+              {decisionResult.score_result?.explanation?.dynamic_verification_summary && (
+                <span className="px-1.5 py-0.2 rounded text-[10px] bg-cyan-950 text-cyan-300 border border-cyan-800">
+                  {decisionResult.score_result.explanation.dynamic_verification_summary.confirmed_count} Live
+                </span>
+              )}
             </button>
             <button
               onClick={() => setActiveTab('dimensions')}
@@ -308,6 +329,122 @@ export const RiskPolicyWorkflowView: React.FC<RiskPolicyWorkflowViewProps> = ({ 
                     {decisionResult.use_case_alignment?.category || 'FINANCIAL_ANALYST'}: Permitted for internal risk modeling with read-only ledger bindings.
                   </p>
                 </div>
+              </div>
+
+              {/* Dynamic verification inline highlight */}
+              {decisionResult.score_result?.explanation?.dynamic_verification_summary && (
+                <div className="bg-slate-950 p-4 rounded-xl border border-cyan-900/50 space-y-2 font-mono text-xs">
+                  <div className="flex items-center justify-between text-cyan-400 font-semibold">
+                    <div className="flex items-center space-x-2">
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      <span>Dynamic Sandbox Verification Engine</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-[11px]">
+                      Concordance: {Math.round((decisionResult.score_result.explanation.dynamic_verification_summary.concordance_rate || 1.0) * 100)}%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 pt-1 text-[11px]">
+                    <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                      <span className="text-slate-500 block">Static Predictions</span>
+                      <span className="text-slate-200 font-bold">{decisionResult.score_result.explanation.dynamic_verification_summary.total_evaluated}</span>
+                    </div>
+                    <div className="bg-slate-900/80 p-2 rounded border border-emerald-900/40">
+                      <span className="text-emerald-400 block">Live Confirmed</span>
+                      <span className="text-emerald-300 font-bold">{decisionResult.score_result.explanation.dynamic_verification_summary.confirmed_count}</span>
+                    </div>
+                    <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
+                      <span className="text-slate-500 block">Unreproduced / Dormant</span>
+                      <span className="text-slate-400 font-bold">{decisionResult.score_result.explanation.dynamic_verification_summary.unreproduced_count}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Tab 1b: Static vs Dynamic Verification Breakdown */}
+          {activeTab === 'dynamic' && (
+            <div className="space-y-4">
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    <span className="text-slate-200 font-bold">Dynamic Telemetry & Static Concordance</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px]">
+                    Dynamic Verification Active
+                  </span>
+                </div>
+                <p className="text-slate-400 text-xs font-sans leading-relaxed">
+                  Findings are verified in isolated dynamic sandbox execution. Confirmed runtime threats receive elevated risk penalties (1.35x), while dormant unexecuted paths are weighted with appropriate epistemic confidence.
+                </p>
+
+                {decisionResult.risks && decisionResult.risks.length > 0 ? (
+                  <div className="space-y-2.5 pt-2">
+                    {decisionResult.risks.map((risk: any) => (
+                      <div key={risk.risk_id} className="bg-slate-900 p-3.5 rounded-lg border border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-bold text-slate-100">{risk.title}</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400">{risk.risk_type}</span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                            risk.verification_status === 'DYNAMIC_CONFIRMED'
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                              : risk.verification_status === 'DYNAMIC_CONTRADICTED'
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : risk.verification_status === 'DYNAMIC_UNREPRODUCED'
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {risk.verification_status || 'STATIC_ONLY'}
+                          </span>
+                        </div>
+
+                        <p className="text-slate-400 text-xs font-sans">{risk.description}</p>
+
+                        {risk.dynamic_context && (
+                          <div className={`p-2.5 rounded border text-[11px] space-y-1.5 ${
+                            risk.dynamic_context.summary?.includes('Simulated dynamic verification') || risk.dynamic_context.summary?.includes('E2B unavailable')
+                              ? 'bg-amber-950/20 border-amber-500/30'
+                              : 'bg-slate-950 border-slate-800'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <div className="text-slate-300 font-semibold flex items-center gap-1.5">
+                                <span>Dynamic Execution Evidence:</span>
+                              </div>
+                              {risk.dynamic_context.summary?.includes('Simulated dynamic verification') || risk.dynamic_context.summary?.includes('E2B unavailable') ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                                  SIMULATED (E2B UNAVAILABLE)
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                                  E2B LIVE MICROVM
+                                </span>
+                              )}
+                            </div>
+                            <div className={
+                              risk.dynamic_context.summary?.includes('Simulated dynamic verification') || risk.dynamic_context.summary?.includes('E2B unavailable')
+                                ? 'text-amber-200/90 font-mono text-[11px]'
+                                : 'text-slate-300 font-mono text-[11px]'
+                            }>
+                              {risk.dynamic_context.summary}
+                            </div>
+                            {risk.dynamic_context.syscalls && risk.dynamic_context.syscalls.length > 0 && (
+                              <div className="text-cyan-400 text-[10px] font-mono">
+                                Observed Syscalls: {risk.dynamic_context.syscalls.slice(0, 3).join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-4 text-center text-slate-500 font-sans">
+                    No active risks recorded for this agent version.
+                  </div>
+                )}
               </div>
             </div>
           )}

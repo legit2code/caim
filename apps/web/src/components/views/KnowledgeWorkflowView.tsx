@@ -23,6 +23,8 @@ import {
   Filter,
   Share2
 } from 'lucide-react';
+import { FieldHelpTooltip } from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 interface KnowledgeWorkflowViewProps {
   currentRole: string;
@@ -55,11 +57,10 @@ export const KnowledgeWorkflowView: React.FC<KnowledgeWorkflowViewProps> = ({ cu
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/dev/rag/synthesize', {
+      const res = await authenticatedFetch('/api/dev/rag/synthesize', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Role': currentRole,
         },
         body: JSON.stringify({
           query,
@@ -98,6 +99,7 @@ export const KnowledgeWorkflowView: React.FC<KnowledgeWorkflowViewProps> = ({ cu
               <span className="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 P22-P24 Synthesis Active
               </span>
+              <FieldHelpTooltip customTitle="Grounded Knowledge RAG" customDescription="Epistemically grounded question answering requiring explicit citation spans, preventing hallucinations by rejecting unverified inferences." />
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               Ask natural language security questions with citation verifications, epistemic grounding, and scope filters.

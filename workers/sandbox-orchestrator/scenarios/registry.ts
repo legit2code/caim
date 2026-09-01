@@ -230,7 +230,43 @@ export class ScenarioRegistry {
         },
       },
     ],
+    [
+      'SCN-COMPOSER-EXEC',
+      {
+        id: 'SCN-COMPOSER-EXEC',
+        name: 'Composer Synthetic Sandbox Execution',
+        version: '1.0.0',
+        category: 'BENIGN',
+        description: 'Runs composer-generated tooling in sandbox bound exclusively to a SyntheticTargetService endpoint under strict default-deny network policy.',
+        inputs: {
+          prompt: 'Execute synthesized agent tooling within synthetic perimeter.',
+          payload: { target: 'http://synthetic-target.local/api/v1' },
+          files: {
+            'runner.js': 'console.log("Synthesized tool execution started against synthetic target.");',
+          },
+        },
+        networkPolicy: {
+          type: 'WHITELIST_ONLY',
+          allowedDomains: ['synthetic-target.local'],
+          allowedPorts: [80, 443, 8080],
+          allowDns: true,
+          interceptEgress: true,
+        },
+        resourceLimits: {
+          maxDurationMs: 30000,
+          maxMemoryMb: 512,
+          maxProcessCount: 5,
+        },
+        expectedBehaviors: {
+          shouldBlockNetwork: false,
+          shouldTripCanary: false,
+          shouldTriggerEvasion: false,
+          allowedExitCodes: [0],
+        },
+      },
+    ],
   ]);
+
 
   public static listScenarios(): SandboxScenario[] {
     return Array.from(this.SCENARIOS.values());

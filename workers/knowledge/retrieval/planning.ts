@@ -16,12 +16,18 @@ export class RetrievalPlanner {
       allow_vault_restricted?: boolean;
       budget_max_records?: number;
       budget_max_tokens?: number;
+      composition_safe_only?: boolean;
+      allowed_risk_bands?: Array<'LOW' | 'LOW_RISK' | 'MEDIUM' | 'HIGH' | 'HIGH_RISK' | 'CRITICAL'>;
+      allowed_lifecycle_statuses?: string[];
     } = {}
   ): RetrievalPlan {
     const max_security_rank = options.max_security_rank ?? SecurityClassificationRank.PUBLIC_METADATA;
     const allow_vault_restricted = options.allow_vault_restricted ?? false;
     const budget_max_records = options.budget_max_records ?? 25;
     const budget_max_tokens = options.budget_max_tokens ?? 8192;
+    const composition_safe_only = options.composition_safe_only ?? false;
+    const allowed_risk_bands = options.allowed_risk_bands;
+    const allowed_lifecycle_statuses = options.allowed_lifecycle_statuses;
 
     const modes: Array<'RELATIONAL_EXACT' | 'VECTOR_SEMANTIC' | 'GRAPH_ONTOLOGY' | 'EVIDENCE_LINEAGE'> = [];
     const top_k = {
@@ -81,6 +87,9 @@ export class RetrievalPlanner {
       allow_vault_restricted,
       budget_max_records,
       budget_max_tokens,
+      composition_safe_only,
+      allowed_risk_bands,
+      allowed_lifecycle_statuses,
       created_at: new Date().toISOString(),
     };
   }

@@ -86,9 +86,9 @@ export class NetworkPolicyEngine {
 
     // 3. WHITELIST_ONLY policy check
     if (policy.type === 'WHITELIST_ONLY') {
-      const cleanHost = destination.toLowerCase().trim();
+      const cleanHost = destination.toLowerCase().trim().split(':')[0];
       const isAllowed = policy.allowedDomains.some(domain => {
-        const cleanDomain = domain.toLowerCase().trim();
+        const cleanDomain = domain.toLowerCase().trim().split(':')[0];
         return cleanHost === cleanDomain || cleanHost.endsWith('.' + cleanDomain);
       });
 

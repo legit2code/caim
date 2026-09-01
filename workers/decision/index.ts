@@ -13,5 +13,6 @@ export * from './policy/engine.ts';
 export * from './policy/overrides.ts';
 export * from './recommendations/engine.ts';
 export * from './use-cases/engine.ts';
+export * from './capabilities/index.ts';
 export * from './ai/gemini-assistant.ts';
 export * from './engine.ts';

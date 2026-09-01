@@ -42,18 +42,35 @@ export class ScoringEngine {
         case 'SECURITY_POSTURE': {
           for (const risk of input.risks) {
             if (risk.risk_type === 'CODE_EXECUTION' || risk.risk_type === 'CREDENTIAL_EXPOSURE' || risk.risk_type === 'PROMPT_INJECTION') {
-              let penalty = risk.severity === 'CRITICAL' ? 35 : risk.severity === 'HIGH' ? 20 : 10;
+              let basePenalty = risk.severity === 'CRITICAL' ? 35 : risk.severity === 'HIGH' ? 20 : 10;
               if (model.formula_type === 'NON_LINEAR_PENALTY') {
-                penalty = Math.round(penalty * 1.3);
+                basePenalty = Math.round(basePenalty * 1.3);
               }
+
+              // Dynamic Verification Weighting
+              let penalty = basePenalty;
+              let statusLabel = '';
+              if (risk.verification_status === 'DYNAMIC_CONFIRMED') {
+                penalty = Math.round(basePenalty * 1.35); // 35% higher penalty when confirmed by live execution
+                statusLabel = ' [DYNAMICALLY CONFIRMED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_CONTRADICTED') {
+                penalty = Math.round(basePenalty * 0.35); // Lower penalty because execution contradicted static alert
+                statusLabel = ' [DYNAMICALLY CONTRADICTED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_UNREPRODUCED') {
+                penalty = Math.round(basePenalty * 0.70); // Static flagged but not materialized during run
+                statusLabel = ' [STATIC-ONLY / UNREPRODUCED DYNAMICALLY]';
+              } else {
+                statusLabel = ' [STATIC-ONLY]';
+              }
+
               rawScore -= penalty;
               const evidenceIds = risk.evidence_links.map((e) => e.evidence_id);
               deductions.push({
-                reason: `${risk.severity} Risk: ${risk.title}`,
+                reason: `${risk.severity} Risk: ${risk.title}${statusLabel}`,
                 points: penalty,
                 evidence_ids: evidenceIds,
               });
-              keyDeductions.push(`[Security] -${penalty}pts: ${risk.title}`);
+              keyDeductions.push(`[Security] -${penalty}pts: ${risk.title}${statusLabel}`);
             }
           }
           break;
@@ -62,15 +79,31 @@ export class ScoringEngine {
         case 'RUNTIME_SAFETY': {
           for (const risk of input.risks) {
             if (risk.risk_type === 'HONEYTOKEN_COMPROMISE' || risk.risk_type === 'DATA_EXFILTRATION' || risk.risk_type === 'DEFENSIVE_EVASION') {
-              const penalty = risk.severity === 'CRITICAL' ? 40 : risk.severity === 'HIGH' ? 25 : 10;
+              let basePenalty = risk.severity === 'CRITICAL' ? 40 : risk.severity === 'HIGH' ? 25 : 10;
+              let penalty = basePenalty;
+              let statusLabel = '';
+
+              if (risk.verification_status === 'DYNAMIC_CONFIRMED') {
+                penalty = Math.round(basePenalty * 1.4); // Heavy penalty for confirmed runtime threats
+                statusLabel = ' [DYNAMICALLY CONFIRMED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_CONTRADICTED') {
+                penalty = Math.round(basePenalty * 0.3);
+                statusLabel = ' [DYNAMICALLY CONTRADICTED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_UNREPRODUCED') {
+                penalty = Math.round(basePenalty * 0.7);
+                statusLabel = ' [STATIC-ONLY / UNREPRODUCED DYNAMICALLY]';
+              } else {
+                statusLabel = ' [STATIC-ONLY]';
+              }
+
               rawScore -= penalty;
               const evidenceIds = risk.evidence_links.map((e) => e.evidence_id);
               deductions.push({
-                reason: `${risk.severity} Runtime Threat: ${risk.title}`,
+                reason: `${risk.severity} Runtime Threat: ${risk.title}${statusLabel}`,
                 points: penalty,
                 evidence_ids: evidenceIds,
               });
-              keyDeductions.push(`[Runtime] -${penalty}pts: ${risk.title}`);
+              keyDeductions.push(`[Runtime] -${penalty}pts: ${risk.title}${statusLabel}`);
             }
           }
           break;
@@ -79,15 +112,26 @@ export class ScoringEngine {
         case 'DEPENDENCY_HEALTH': {
           for (const risk of input.risks) {
             if (risk.risk_type === 'SUPPLY_CHAIN') {
-              const penalty = risk.severity === 'CRITICAL' ? 30 : risk.severity === 'HIGH' ? 20 : 10;
+              let basePenalty = risk.severity === 'CRITICAL' ? 30 : risk.severity === 'HIGH' ? 20 : 10;
+              let penalty = basePenalty;
+              let statusLabel = '';
+
+              if (risk.verification_status === 'DYNAMIC_CONFIRMED') {
+                penalty = Math.round(basePenalty * 1.25);
+                statusLabel = ' [DYNAMICALLY REACHED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_UNREPRODUCED') {
+                penalty = Math.round(basePenalty * 0.8);
+                statusLabel = ' [STATIC REACHABLE / UNEXECUTED]';
+              }
+
               rawScore -= penalty;
               const evidenceIds = risk.evidence_links.map((e) => e.evidence_id);
               deductions.push({
-                reason: `Reachable Dependency Vulnerability: ${risk.title}`,
+                reason: `Reachable Dependency Vulnerability: ${risk.title}${statusLabel}`,
                 points: penalty,
                 evidence_ids: evidenceIds,
               });
-              keyDeductions.push(`[Supply Chain] -${penalty}pts: ${risk.title}`);
+              keyDeductions.push(`[Supply Chain] -${penalty}pts: ${risk.title}${statusLabel}`);
             }
           }
           break;
@@ -96,15 +140,28 @@ export class ScoringEngine {
         case 'CODE_QUALITY': {
           for (const risk of input.risks) {
             if (risk.risk_type === 'DATA_INTEGRITY' || risk.risk_type === 'FILE_SYSTEM' || risk.risk_type === 'GOVERNANCE') {
-              const penalty = risk.severity === 'HIGH' ? 15 : risk.severity === 'MEDIUM' ? 10 : 5;
+              let basePenalty = risk.severity === 'HIGH' ? 15 : risk.severity === 'MEDIUM' ? 10 : 5;
+              let penalty = basePenalty;
+              let statusLabel = '';
+
+              if (risk.verification_status === 'DYNAMIC_CONFIRMED') {
+                penalty = Math.round(basePenalty * 1.2);
+                statusLabel = ' [DYNAMICALLY CONFIRMED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_CONTRADICTED') {
+                penalty = Math.round(basePenalty * 0.5);
+                statusLabel = ' [DYNAMICALLY CONTRADICTED IN E2B]';
+              } else if (risk.verification_status === 'DYNAMIC_UNREPRODUCED') {
+                statusLabel = ' [STATIC-ONLY / UNREPRODUCED]';
+              }
+
               rawScore -= penalty;
               const evidenceIds = risk.evidence_links.map((e) => e.evidence_id);
               deductions.push({
-                reason: `${risk.severity} Quality Defect: ${risk.title}`,
+                reason: `${risk.severity} Quality Defect: ${risk.title}${statusLabel}`,
                 points: penalty,
                 evidence_ids: evidenceIds,
               });
-              keyDeductions.push(`[Quality] -${penalty}pts: ${risk.title}`);
+              keyDeductions.push(`[Quality] -${penalty}pts: ${risk.title}${statusLabel}`);
             }
           }
           break;
@@ -165,16 +222,67 @@ export class ScoringEngine {
     else if (overallScore >= 30) riskBand = 'ELEVATED';
     else riskBand = 'SEVERE';
 
+    // Dynamic Verification Breakdown Calculation
+    let dynamicConfirmedCount = 0;
+    let dynamicUnreproducedCount = 0;
+    let dynamicContradictedCount = 0;
+    let staticOnlyCount = 0;
+    const dynamicBreakdown: Array<{ risk_id: string; title: string; verification_status: any; detail: string }> = [];
+
+    for (const r of input.risks) {
+      const vStatus = r.verification_status || 'STATIC_ONLY';
+      if (vStatus === 'DYNAMIC_CONFIRMED') {
+        dynamicConfirmedCount++;
+        dynamicBreakdown.push({
+          risk_id: r.risk_id,
+          title: r.title,
+          verification_status: vStatus,
+          detail: r.dynamic_context?.summary || 'Static risk hypothesis confirmed via dynamic execution.',
+        });
+      } else if (vStatus === 'DYNAMIC_CONTRADICTED') {
+        dynamicContradictedCount++;
+        dynamicBreakdown.push({
+          risk_id: r.risk_id,
+          title: r.title,
+          verification_status: vStatus,
+          detail: r.dynamic_context?.summary || 'Static risk hypothesis contradicted; live runtime executed safely without reproducing vulnerability.',
+        });
+      } else if (vStatus === 'DYNAMIC_UNREPRODUCED') {
+        dynamicUnreproducedCount++;
+        dynamicBreakdown.push({
+          risk_id: r.risk_id,
+          title: r.title,
+          verification_status: vStatus,
+          detail: r.dynamic_context?.summary || 'Static risk flagged by AST/taint analysis; dormant during scenario execution (did not materialize).',
+        });
+      } else {
+        staticOnlyCount++;
+        dynamicBreakdown.push({
+          risk_id: r.risk_id,
+          title: r.title,
+          verification_status: vStatus,
+          detail: 'Evaluated purely via static AST/symbol graph analysis (no dynamic scenario correlated).',
+        });
+      }
+    }
+
     // Identify strongest and weakest dimensions
     const sortedDims = [...dimensionValues].sort((a, b) => b.raw_score - a.raw_score);
     const strongest = sortedDims[0]?.display_name || 'N/A';
     const weakest = sortedDims[sortedDims.length - 1]?.display_name || 'N/A';
 
     const explanation: ScoreExplanation = {
-      summary: `Overall score ${overallScore}/100 (Grade ${grade}, Risk Band ${riskBand}) computed via ${model.name} (${model.version}).`,
+      summary: `Overall score ${overallScore}/100 (Grade ${grade}, Risk Band ${riskBand}) computed via ${model.name} (${model.version}) with dynamic verification weighting.`,
       strongest_dimension: strongest,
       weakest_dimension: weakest,
       key_deductions: keyDeductions.length > 0 ? keyDeductions : ['No deductions; flawless evaluation posture.'],
+      dynamic_verification_summary: {
+        dynamic_confirmed_count: dynamicConfirmedCount,
+        dynamic_unreproduced_count: dynamicUnreproducedCount,
+        dynamic_contradicted_count: dynamicContradictedCount,
+        static_only_count: staticOnlyCount,
+        dynamic_findings_breakdown: dynamicBreakdown,
+      },
     };
 
     return {

@@ -15,6 +15,7 @@ import {
   SandboxLifecycleManager,
   SimulatedSandboxProvider,
   E2BSandboxProvider,
+  StaticDynamicComparator,
   runDynamicSandboxJob
 } from '../../workers/sandbox-orchestrator/index.ts';
 
@@ -299,6 +300,75 @@ describe('P19 — Dynamic Sandbox & Evasion Intelligence', () => {
       expect(execRes.exitCode).toBe(0);
       const teardown = await e2b.destroy(sessionId);
       expect(teardown.guaranteed_clean).toBe(true);
+    }, 25000);
+  });
+
+  describe('Static vs Dynamic Analysis Correlation & Divergence Reporting', () => {
+    it('correlates static AST/CFG predictions with dynamic runtime telemetry', async () => {
+      const dynamicRun = await SandboxOrchestrationEngine.runScenario({
+        artifactId: 'art-corr-test-01',
+        scenarioId: 'SCN-BENIGN-01',
+        files: {
+          'index.js': 'console.log("Benign execution completed.");',
+        },
+      });
+
+      const mockStaticFindings = [
+        {
+          finding_id: 'sf-01',
+          rule_id: 'SA-PROC-001',
+          ruleset_version: '1.0.0',
+          category: 'PROCESS_EXECUTION' as const,
+          severity: 'HIGH' as const,
+          confidence: 0.95,
+          title: 'Direct Shell / Command Execution',
+          description: 'Process spawning detected statically in file.',
+          rationale: 'Child process invocation poses risk.',
+          source_span: { file_path: 'index.js', start_line: 1, start_col: 1, end_line: 1, end_col: 10, byte_offset_start: 0, byte_offset_end: 10 },
+          stage_run: {
+            stage_run_id: 'sr-1',
+            stage_name: 'STATIC_ANALYSIS' as const,
+            artifact_id: 'art-corr-test-01',
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            status: 'COMPLETED' as const,
+            engine_key: 'static-analysis',
+            engine_version: '1.0.0',
+            ruleset_version: '1.0.0',
+          },
+        },
+        {
+          finding_id: 'sf-02',
+          rule_id: 'SA-NET-001',
+          ruleset_version: '1.0.0',
+          category: 'NETWORK' as const,
+          severity: 'MEDIUM' as const,
+          confidence: 0.85,
+          title: 'Outbound Network Call',
+          description: 'Dormant network egress path detected statically.',
+          rationale: 'Network connections should be audited.',
+          source_span: { file_path: 'index.js', start_line: 2, start_col: 1, end_line: 2, end_col: 10, byte_offset_start: 11, byte_offset_end: 20 },
+          stage_run: {
+            stage_run_id: 'sr-1',
+            stage_name: 'STATIC_ANALYSIS' as const,
+            artifact_id: 'art-corr-test-01',
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            status: 'COMPLETED' as const,
+            engine_key: 'static-analysis',
+            engine_version: '1.0.0',
+            ruleset_version: '1.0.0',
+          },
+        },
+      ];
+
+      const report = StaticDynamicComparator.compare(mockStaticFindings, dynamicRun);
+      expect(report.summary.total_static_findings).toBe(2);
+      expect(report.summary.confirmed_matches_count).toBe(1);
+      expect(report.summary.untriggered_static_count).toBe(1);
+      expect(report.confirmed_matches[0].rule_id).toBe('SA-PROC-001');
+      expect(report.untriggered_static_findings[0].rule_id).toBe('SA-NET-001');
+      expect(report.narrative_report).toContain('Static vs Dynamic Analysis Correlation Report');
     });
   });
 

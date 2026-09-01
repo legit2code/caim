@@ -33,6 +33,27 @@ export interface RiskEvidenceLink {
   notes?: string;
 }
 
+export type RiskVerificationStatus = 'STATIC_ONLY' | 'DYNAMIC_CONFIRMED' | 'DYNAMIC_CONTRADICTED' | 'DYNAMIC_UNREPRODUCED';
+
+export interface DynamicFindingMatch {
+  finding_id?: string;
+  rule_id?: string;
+  category?: string;
+  severity?: string;
+  static_prediction?: string;
+  dynamic_evidence: {
+    matched_event_ids?: string[];
+    summary?: string;
+    syscalls?: string[];
+    network_egress_attempted?: string[];
+    filesystem_access?: string[];
+    exit_code?: number;
+    raw_traces?: string[];
+  };
+  concordance: 'CONFIRMED' | 'CONTRADICTED' | 'UNREPRODUCED' | 'PARTIAL';
+  notes?: string;
+}
+
 export interface RiskRecord {
   risk_id: string;
   analysis_run_id: string;
@@ -47,6 +68,15 @@ export interface RiskRecord {
   impact: number; // 0.0 to 1.0
   risk_score: number; // likelihood * impact (0.0 to 1.0)
   mitigated: boolean;
+  verification_status?: RiskVerificationStatus;
+  dynamic_context?: {
+    concordance: string;
+    summary: string;
+    syscalls?: string[];
+    network_egress_attempted?: string[];
+    filesystem_access?: string[];
+    exit_code?: number;
+  };
   mitigation_notes?: string;
   remediation_guidance?: string;
   evidence_links: RiskEvidenceLink[];
@@ -106,6 +136,18 @@ export interface ScoreExplanation {
   strongest_dimension: string;
   weakest_dimension: string;
   key_deductions: string[];
+  dynamic_verification_summary?: {
+    dynamic_confirmed_count: number;
+    dynamic_unreproduced_count: number;
+    dynamic_contradicted_count: number;
+    static_only_count: number;
+    dynamic_findings_breakdown: Array<{
+      risk_id: string;
+      title: string;
+      verification_status: RiskVerificationStatus;
+      detail: string;
+    }>;
+  };
 }
 
 export interface ScoreResult {

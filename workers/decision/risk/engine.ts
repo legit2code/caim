@@ -4,7 +4,7 @@
  * with deterministic likelihood, impact, severity, and evidence links.
  */
 
-import { RiskRecord, RiskEvidenceLink, RiskSeverity } from '../types.ts';
+import { RiskRecord, RiskEvidenceLink, RiskSeverity, DynamicFindingMatch, RiskVerificationStatus } from '../types.ts';
 import { RISK_TAXONOMY_V1 } from './rules.ts';
 
 export interface RiskEvaluationInput {
@@ -32,6 +32,7 @@ export interface RiskEvaluationInput {
     confidence?: number;
     evidence_ids?: string[];
   }>;
+  dynamicFindings?: DynamicFindingMatch[];
   taintFlows?: Array<{
     flow_id?: string;
     source_type?: string;
@@ -257,18 +258,68 @@ export class RiskEngine {
           evidenceLinks.push({ evidence_id: input.evidenceList[0].evidence_id, relevance_score: 0.85, notes: 'Linked static evidence' });
         }
 
+        // Match with dynamicFindings if available
+        let verificationStatus: 'STATIC_ONLY' | 'DYNAMIC_CONFIRMED' | 'DYNAMIC_CONTRADICTED' | 'DYNAMIC_UNREPRODUCED' = 'STATIC_ONLY';
+        let dynamicCtx: RiskRecord['dynamic_context'] = undefined;
+        let finalLikelihood = rule.base_likelihood;
+        let finalImpact = rule.base_impact;
+
+        if (input.dynamicFindings && input.dynamicFindings.length > 0) {
+          const matchedDyn = input.dynamicFindings.find(
+            d => (f.finding_id && d.finding_id === f.finding_id) ||
+                 (f.rule_id && d.rule_id === f.rule_id) ||
+                 (f.category && d.category === f.category)
+          );
+
+          if (matchedDyn) {
+            if (matchedDyn.concordance === 'CONFIRMED') {
+              verificationStatus = 'DYNAMIC_CONFIRMED';
+              finalLikelihood = Math.min(1.0, parseFloat((rule.base_likelihood * 1.25).toFixed(4)));
+              finalImpact = Math.min(1.0, parseFloat((rule.base_impact * 1.15).toFixed(4)));
+            } else if (matchedDyn.concordance === 'CONTRADICTED') {
+              verificationStatus = 'DYNAMIC_CONTRADICTED';
+              finalLikelihood = Math.max(0.1, parseFloat((rule.base_likelihood * 0.4).toFixed(4)));
+            } else if (matchedDyn.concordance === 'UNREPRODUCED') {
+              verificationStatus = 'DYNAMIC_UNREPRODUCED';
+              finalLikelihood = Math.max(0.2, parseFloat((rule.base_likelihood * 0.7).toFixed(4)));
+            }
+
+            dynamicCtx = {
+              concordance: matchedDyn.concordance,
+              summary: matchedDyn.dynamic_evidence.summary || matchedDyn.notes || `Dynamic verification: ${matchedDyn.concordance}`,
+              syscalls: matchedDyn.dynamic_evidence.syscalls,
+              network_egress_attempted: matchedDyn.dynamic_evidence.network_egress_attempted,
+              filesystem_access: matchedDyn.dynamic_evidence.filesystem_access,
+              exit_code: matchedDyn.dynamic_evidence.exit_code,
+            };
+
+            if (matchedDyn.dynamic_evidence.matched_event_ids && matchedDyn.dynamic_evidence.matched_event_ids.length > 0) {
+              for (const evId of matchedDyn.dynamic_evidence.matched_event_ids) {
+                evidenceLinks.push({
+                  evidence_id: evId,
+                  relevance_score: 1.0,
+                  notes: matchedDyn.notes || `Dynamic sandbox trace (${matchedDyn.concordance})`,
+                });
+              }
+            }
+          }
+        }
+
         risks.push({
           risk_id: `risk-finding-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           analysis_run_id: runId,
           entity_ref_id: entityRefId,
+          rule_id: f.rule_id,
           risk_type: rule.category,
           title: f.title || rule.title_template,
           description: f.description || rule.description_template,
           severity: (f.severity as RiskSeverity) || rule.severity,
-          likelihood: rule.base_likelihood,
-          impact: rule.base_impact,
-          risk_score: parseFloat((rule.base_likelihood * rule.base_impact).toFixed(4)),
+          likelihood: finalLikelihood,
+          impact: finalImpact,
+          risk_score: parseFloat((finalLikelihood * finalImpact).toFixed(4)),
           mitigated: false,
+          verification_status: verificationStatus,
+          dynamic_context: dynamicCtx,
           remediation_guidance: rule.remediation_template,
           evidence_links: evidenceLinks,
           created_at: new Date().toISOString(),

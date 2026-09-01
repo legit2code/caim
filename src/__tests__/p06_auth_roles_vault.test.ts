@@ -18,6 +18,12 @@ import {
   UnauthorizedVaultAccessError,
   ScopeBoundaryViolationError,
   createBrowserAuthClient,
+  createServerAuthHelper,
+  hashPassword,
+  verifyPassword,
+  signAccessToken,
+  verifyAccessToken,
+  AuthService,
   BusinessRole,
   ServiceIdentity
 } from '../../packages/auth/src/index.ts';
@@ -383,4 +389,169 @@ describe('P06 — Authentication, Roles, RLS & Vault Boundaries Matrix Tests', (
       expect(grants.length).toBe(1);
     });
   });
+
+  // 8. Real Authentication, JWT Cryptographic Verification & Header Forgery Rejection
+  describe('8. Real Authentication & Header Forgery Rejection Matrix', () => {
+    const authHelper = createServerAuthHelper({
+      jwtSecret: 'test-secret-key-for-jwt-verification-p06',
+      serviceSecret: 'test-service-mesh-shared-secret-p06',
+    });
+
+    it('GATE: Bcrypt hashes passwords and securely rejects plain or incorrect matches', async () => {
+      const plaintext = 'SuperSecret123!';
+      const hash = await hashPassword(plaintext);
+      
+      expect(hash).not.toBe(plaintext);
+      expect(hash.startsWith('$2')).toBe(true); // bcrypt prefix
+
+      const isMatch = await verifyPassword(plaintext, hash);
+      expect(isMatch).toBe(true);
+
+      const isWrongMatch = await verifyPassword('WrongPassword', hash);
+      expect(isWrongMatch).toBe(false);
+    });
+
+    it('GATE: Forged role headers (x-user-role / x-roles) are STRICTLY IGNORED and resolve to anonymous', async () => {
+      // Attacker attempts to forge admin role via client headers without a signed JWT
+      const forgedHeaders = {
+        'x-roles': 'admin,vault_reader',
+        'x-user-role': 'admin',
+        'x-role': 'admin',
+        'x-tenant-id': TENANT_A_SCOPE,
+      };
+
+      const principal = await authHelper.authenticateRequest(forgedHeaders);
+      
+      expect(principal.is_authenticated).toBe(false);
+      expect(principal.roles).toEqual(['anonymous']);
+      expect(principal.principal_id).toBe('anonymous');
+      expect(principal.max_classification_rank).toBe(SecurityClassificationRank.PUBLIC_METADATA);
+
+      // Attempting protected operations with this principal must fail
+      expect(() => requireAuth(principal)).toThrow(UnauthorizedAccessError);
+      expect(() => requireRole(principal, ['admin'])).toThrow(UnauthorizedAccessError);
+    });
+
+    it('GATE: Forged or tampered JWT tokens are cryptographically rejected', async () => {
+      // Token signed with wrong secret key
+      const forgedToken = signAccessToken(
+        {
+          principal_id: 'attacker_1',
+          email: 'attacker@evil.com',
+          roles: ['admin', 'vault_reader'],
+        },
+        { secret: 'wrong-malicious-attacker-secret-key' }
+      );
+
+      const headers = {
+        'authorization': `Bearer ${forgedToken}`,
+      };
+
+      const principal = await authHelper.authenticateRequest(headers);
+      
+      expect(principal.is_authenticated).toBe(false);
+      expect(principal.roles).toEqual(['anonymous']);
+      expect(() => requireAuth(principal)).toThrow(UnauthorizedAccessError);
+    });
+
+    it('GATE: Forged x-service-identity without valid shared secret is REJECTED', async () => {
+      // Attacker passes x-service-identity without the matching secret
+      const forgedServiceHeaders = {
+        'x-service-identity': 'service-analysis',
+        // Missing or invalid x-service-secret
+        'x-service-secret': 'invalid-attacker-secret',
+      };
+
+      const principal = await authHelper.authenticateRequest(forgedServiceHeaders);
+      
+      expect(principal.is_authenticated).toBe(false);
+      expect(principal.is_service).toBe(false);
+      expect(principal.roles).toEqual(['anonymous']);
+      expect(() => requireServiceIdentity(principal, ['service-analysis'])).toThrow(UnauthorizedAccessError);
+    });
+
+    it('GATE: Valid verified service credentials successfully authenticate service worker', async () => {
+      const verifiedServiceHeaders = {
+        'x-service-identity': 'service-analysis',
+        'x-service-secret': 'test-service-mesh-shared-secret-p06',
+        'x-tenant-id': TENANT_A_SCOPE,
+      };
+
+      const principal = await authHelper.authenticateRequest(verifiedServiceHeaders);
+      
+      expect(principal.is_authenticated).toBe(true);
+      expect(principal.is_service).toBe(true);
+      expect(principal.service_name).toBe('service-analysis');
+      expect(principal.tenant_id).toBe(TENANT_A_SCOPE);
+      expect(() => requireServiceIdentity(principal, ['service-analysis'])).not.toThrow();
+    });
+
+    it('GATE: Valid signed JWT securely resolves principal identity and roles', async () => {
+      const validToken = signAccessToken(
+        {
+          principal_id: 'usr_verified_analyst_01',
+          email: 'analyst@caim.internal',
+          roles: ['analyst'],
+          tenant_id: TENANT_A_SCOPE,
+        },
+        { secret: 'test-secret-key-for-jwt-verification-p06' }
+      );
+
+      const headers = {
+        'authorization': `Bearer ${validToken}`,
+      };
+
+      const principal = await authHelper.authenticateRequest(headers);
+      
+      expect(principal.is_authenticated).toBe(true);
+      expect(principal.principal_id).toBe('usr_verified_analyst_01');
+      expect(principal.roles).toContain('analyst');
+      expect(principal.tenant_id).toBe(TENANT_A_SCOPE);
+      expect(() => requireAuth(principal)).not.toThrow();
+      expect(() => requireRole(principal, ['analyst'])).not.toThrow();
+      // Cannot execute admin functions
+      expect(() => requireRole(principal, ['admin'])).toThrow(UnauthorizedAccessError);
+    });
+
+    it('GATE: AuthService executes full password login, JWT issuance, and refresh token rotation', async () => {
+      const authService = new AuthService();
+      
+      // 1. Login with seeded admin credentials
+      const loginRes = await authService.loginWithPassword({
+        email: 'admin@caim.internal',
+        password: 'Admin123!Secure',
+      });
+
+      expect(loginRes.token_type).toBe('Bearer');
+      expect(loginRes.expires_in).toBe(900); // 15m
+      expect(loginRes.access_token).toBeDefined();
+      expect(loginRes.refresh_token).toBeDefined();
+      expect(loginRes.principal.roles).toContain('admin');
+
+      // 2. Verify issued access token
+      const claims = verifyAccessToken(loginRes.access_token);
+      expect(claims.sub).toBe(loginRes.principal.principal_id);
+      expect(claims.email).toBe('admin@caim.internal');
+      expect(claims.roles).toContain('admin');
+
+      // 3. Refresh token rotation
+      const refreshRes = await authService.refreshAccessToken(loginRes.refresh_token);
+      expect(refreshRes.access_token).toBeDefined();
+      expect(refreshRes.refresh_token).toBeDefined();
+      expect(refreshRes.refresh_token).not.toBe(loginRes.refresh_token); // Rotated!
+
+      // 4. Old refresh token cannot be reused
+      await expect(authService.refreshAccessToken(loginRes.refresh_token)).rejects.toThrow(
+        /Invalid, revoked, or expired refresh token/
+      );
+
+      // 5. Logout / revoke session
+      const revoked = await authService.revokeSession(refreshRes.refresh_token);
+      expect(revoked).toBe(true);
+      await expect(authService.refreshAccessToken(refreshRes.refresh_token)).rejects.toThrow(
+        /Invalid, revoked, or expired refresh token/
+      );
+    });
+  });
 });
+

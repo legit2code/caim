@@ -73,6 +73,9 @@ Architecture: ${rawEntity.architecture_tier || 'Micro-Agent'}`;
           vendor,
           framework,
           agent_id: rawEntity.agent_id || context.agent_id,
+          risk_band: rawEntity.risk_band || rawEntity.risk_level || 'LOW_RISK',
+          lifecycle_status: rawEntity.lifecycle_status || rawEntity.status || rawEntity.lifecycle_state || 'APPROVED',
+          lifecycle_state: rawEntity.lifecycle_state || rawEntity.lifecycle_status || rawEntity.status || 'APPROVED',
         };
         break;
       }
@@ -81,7 +84,7 @@ Architecture: ${rawEntity.architecture_tier || 'Micro-Agent'}`;
         const verNumber = rawEntity.version_number || rawEntity.semver || '1.0.0';
         const tag = rawEntity.version_tag || 'latest';
         const gitCommit = rawEntity.git_commit_sha || '0000000';
-        const status = rawEntity.lifecycle_state || rawEntity.status || 'DRAFT';
+        const status = rawEntity.lifecycle_state || rawEntity.lifecycle_status || rawEntity.status || 'APPROVED';
         const notes = rawEntity.release_notes || 'Initial registration';
         const hash = rawEntity.integrity_hash || computeSha256(rawEntity);
 
@@ -98,6 +101,8 @@ Release Notes: ${notes}`;
           version_number: verNumber,
           version_tag: tag,
           lifecycle_state: status,
+          lifecycle_status: status,
+          risk_band: rawEntity.risk_band || rawEntity.risk_level || 'LOW_RISK',
           git_commit: gitCommit,
           integrity_hash: hash,
         };

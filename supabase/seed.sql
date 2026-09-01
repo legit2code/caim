@@ -72,3 +72,13 @@ VALUES
 ON CONFLICT (artifact_type, artifact_key, version) DO UPDATE SET
   status = EXCLUDED.status,
   activated_at = EXCLUDED.activated_at;
+
+-- 8. Authoritative Admin & Auditor Principals (Password: Admin2026!SecureRoot# / Admin123!Secure)
+INSERT INTO security.principals (principal_id, email, hashed_password, roles, tenant_id, created_at)
+VALUES
+  ('00000000-0000-0000-0001-000000000001', 'admin@caim.internal', '$2b$10$yETjGKPiH3Nge4JRueLT.uS/0uPXYGUVmSgQZQzpjzwhB/7M/bNl6', ARRAY['admin', 'operator', 'auditor', 'reviewer', 'analyst', 'product_user']::text[], NULL, now()),
+  ('00000000-0000-0000-0001-000000000002', 'auditor@caim.internal', '$2b$10$FqsaxeCzDIEfRURLkub1heoy8ugi5cC3TMGMqGDDtWFbIIdOogVce', ARRAY['auditor', 'analyst', 'product_user']::text[], NULL, now())
+ON CONFLICT (email) DO UPDATE SET
+  hashed_password = EXCLUDED.hashed_password,
+  roles = EXCLUDED.roles;
+

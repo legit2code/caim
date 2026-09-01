@@ -390,15 +390,15 @@ export const DiagnosticSyntaxView: React.FC<DiagnosticSyntaxViewProps> = ({ curr
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                        <div className="text-[10px] text-slate-500">Env Variables ({inspectResult.configuration.env_vars.length})</div>
+                        <div className="text-[10px] text-slate-500">Env Variables ({inspectResult.configuration?.env_vars?.length ?? 0})</div>
                         <div className="font-mono text-slate-300 mt-1 truncate">
-                          {inspectResult.configuration.env_vars.map((e: any) => e.name).join(', ') || 'None'}
+                          {inspectResult.configuration?.env_vars?.map((e: any) => e.name).join(', ') || 'None'}
                         </div>
                       </div>
                       <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                        <div className="text-[10px] text-slate-500">Model References ({inspectResult.configuration.models.length})</div>
+                        <div className="text-[10px] text-slate-500">Model References ({inspectResult.configuration?.models?.length ?? 0})</div>
                         <div className="font-mono text-slate-300 mt-1 truncate">
-                          {inspectResult.configuration.models.map((m: any) => m.model_id).join(', ') || 'None'}
+                          {inspectResult.configuration?.models?.map((m: any) => m.model_id).join(', ') || 'None'}
                         </div>
                       </div>
                     </div>

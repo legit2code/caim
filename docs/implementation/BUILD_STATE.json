@@ -36,7 +36,7 @@
   "lastGreenCommit": "p36-final-complete-application-audit",
   "releaseCandidateVersion": "v2.0.1-rc.1",
   "finalAuditVerdict": "APPROVED_FOR_RELEASE",
-  "migrationHead": "20260823000014_p06_auth_roles_rls_and_vault.sql",
+  "migrationHead": "20260823000014_p21_decision_scoring_policy_overrides.sql",
   "totalMigrationsApplied": 14,
   "totalEnginesTarget": 71,
   "implementedEnginesCount": 71,

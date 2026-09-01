@@ -123,27 +123,31 @@ export class SandboxOrchestrationEngine {
       // Execute scenario files/commands
       for (const [filePath, content] of Object.entries(sanitizedFilesRes.sanitized)) {
         rawTraces.push(`[FS_TRANSFER] Wrote ${filePath} (${content.length} bytes)`);
+      }
+
+      const filesToExecute = sanitizedFilesRes.sanitized['runner.js']
+        ? ['runner.js']
+        : Object.keys(sanitizedFilesRes.sanitized).filter(f => f.endsWith('.js') || f.endsWith('.ts'));
+
+      for (const filePath of filesToExecute) {
+        const content = sanitizedFilesRes.sanitized[filePath];
+        const cmd = `node ${filePath}`;
+        rawTraces.push(`[EXEC_COMMAND] ${cmd} :: Content: ${content}`);
         
-        // Check for node command
-        if (filePath.endsWith('.js') || filePath.endsWith('.ts')) {
-          const cmd = `node ${filePath}`;
-          rawTraces.push(`[EXEC_COMMAND] ${cmd} :: Content: ${content}`);
-          
-          const execRes = await provider.executeCommand(sessionId, {
-            command: 'node',
-            args: [filePath],
-            cwd: '/app',
-            timeoutMs: resourceQuota.maxDurationMs,
-          });
+        const execRes = await provider.executeCommand(sessionId, {
+          command: 'node',
+          args: [filePath],
+          cwd: '/app',
+          timeoutMs: resourceQuota.maxDurationMs,
+        });
 
-          rawTraces.push(`[EXEC_STDOUT] ${execRes.stdout}`);
-          if (execRes.stderr) {
-            rawTraces.push(`[EXEC_STDERR] ${execRes.stderr}`);
-          }
+        rawTraces.push(`[EXEC_STDOUT] ${execRes.stdout}`);
+        if (execRes.stderr) {
+          rawTraces.push(`[EXEC_STDERR] ${execRes.stderr}`);
+        }
 
-          if (execRes.exitCode !== 0 && !scenario.expectedBehaviors.allowedExitCodes?.includes(execRes.exitCode)) {
-            status = 'FAILED';
-          }
+        if (execRes.exitCode !== 0 && !scenario.expectedBehaviors.allowedExitCodes?.includes(execRes.exitCode)) {
+          status = 'FAILED';
         }
       }
 

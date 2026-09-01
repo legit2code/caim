@@ -24,8 +24,16 @@ import {
   ArrowRight,
   Filter
 } from 'lucide-react';
+import {
+  EpistemicStatusBadge,
+  FieldHelpTooltip,
+  SecurityClassificationBadge,
+  RiskScoreBadge
+} from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 export type EpistemicState = 'CONFIRMED' | 'REFUTED' | 'UNCERTAIN' | 'CONTRADICTED';
+
 
 export interface EvidenceNode {
   evidence_id: string;
@@ -240,6 +248,34 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [drawerData, setDrawerData] = useState<any | null>(null);
 
+  React.useEffect(() => {
+    async function loadEvidence() {
+      try {
+        const res = await authenticatedFetch('/api/evidence/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-role': currentRole || 'CAIM_DIAGNOSTIC_ADMIN',
+          },
+          body: JSON.stringify({ agentId: 'agent-financial-analyst' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.nodes && Array.isArray(data.nodes) && data.nodes.length > 0) {
+            setEvidenceList(prev => {
+              const ids = new Set(prev.map(p => p.evidence_id));
+              const newNodes = data.nodes.filter((n: any) => !ids.has(n.evidence_id));
+              return [...newNodes, ...prev];
+            });
+          }
+        }
+      } catch (err) {
+        // Retain default seed evidence graph on failure
+      }
+    }
+    loadEvidence();
+  }, [currentRole]);
+
   const selectedEvidence = evidenceList.find(e => e.evidence_id === selectedEvidenceId) || evidenceList[0];
 
   const filteredEvidence = evidenceList.filter(ev => {
@@ -298,7 +334,10 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
         <div className="lg:col-span-4 space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">Evidence Records</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+                <span>Evidence Records</span>
+                <FieldHelpTooltip fieldKey="epistemic_status" />
+              </span>
               <span className="text-xs font-mono px-2 py-0.5 bg-slate-800 rounded text-slate-300">{filteredEvidence.length} Total</span>
             </div>
 
@@ -355,14 +394,9 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
                 >
                   <div className="flex items-start justify-between">
                     <span className="text-[11px] font-mono font-semibold text-cyan-400">{ev.evidence_id}</span>
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                      ev.epistemic_state === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
-                      ev.epistemic_state === 'CONTRADICTED' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
-                      'bg-slate-800 text-slate-400'
-                    }`}>
-                      {ev.epistemic_state}
-                    </span>
+                    <EpistemicStatusBadge status={ev.epistemic_state} />
                   </div>
+
 
                   <p className="text-xs text-slate-300 line-clamp-2 mt-2 leading-relaxed">
                     {ev.summary}
@@ -403,8 +437,12 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
 
             {/* Epistemic Lineage Visualizer: 3 Steps */}
             <div className="space-y-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">
-                Epistemic Lineage Flow: Observation → Assertion → Claim
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+                <span>Epistemic Lineage Flow: Observation → Assertion → Claim</span>
+                <FieldHelpTooltip 
+                  customTitle="Observation-to-Claim Lineage"
+                  customDescription="Traces raw evidence observations up through inferred assertions to formal policy-binding claims with epistemological validity status."
+                />
               </h3>
 
               {/* Step 1: Raw Evidence Observation */}
@@ -413,6 +451,7 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
                   <span className="flex items-center space-x-2 text-cyan-400 font-semibold">
                     <Radio className="w-3.5 h-3.5" />
                     <span>Level 1: Grounded Observation</span>
+                    <FieldHelpTooltip customTitle="Grounded Observation" customDescription="Direct empirical finding from AST analysis, sandbox trace, or cryptographic signature." />
                   </span>
                   <span className="text-slate-500">{new Date(selectedEvidence.recorded_at).toUTCString()}</span>
                 </div>
@@ -429,6 +468,7 @@ export const EvidenceWorkflowView: React.FC<EvidenceWorkflowViewProps> = ({ curr
                   <span className="flex items-center space-x-1.5 text-amber-400 font-semibold">
                     <GitFork className="w-3.5 h-3.5" />
                     <span>Level 2: Synthesized Assertions</span>
+                    <FieldHelpTooltip customTitle="Synthesized Assertions" customDescription="Logical deductions derived by correlating multiple evidence points to detect behavioral patterns and resolve contradictions." />
                   </span>
                   <span>{selectedEvidence.assertions.length} Assertions Derived</span>
                 </div>

@@ -75,3 +75,46 @@ export function requireGrant(context: PrincipalContext, grantType: string): void
     );
   }
 }
+
+/**
+ * Dedicated per-principal capability grant check (NON-ROLE-BASED).
+ * Admin role alone does NOT confer capability access; must have an active grant row.
+ */
+export async function requireCapabilityGrant(
+  context: PrincipalContext,
+  capabilityKey: string | string[],
+  options: {
+    techniqueCategory?: string;
+    grantService?: { checkComposerAccess: (id: string, cat?: string) => Promise<{ allowed: boolean; reason?: string }> };
+  } = {}
+): Promise<void> {
+  if (!context.is_authenticated || !context.principal_id || context.principal_id === 'anonymous') {
+    throw new UnauthorizedAccessError('Authentication required: principal is anonymous.');
+  }
+
+  // Capability grants are strictly per-principal and NEVER implicitly granted by admin role alone
+  const { CapabilityGrantService } = await import('./capability.ts');
+  const service = options.grantService || new CapabilityGrantService();
+
+  const keys = Array.isArray(capabilityKey) ? capabilityKey : [capabilityKey];
+
+  // If checking composer capability specifically
+  if (keys.includes('composer:full_access') || keys.includes('composer:restricted_access')) {
+    const access = await (service as any).checkComposerAccess(context.principal_id, options.techniqueCategory);
+    if (!access.allowed) {
+      throw new UnauthorizedAccessError(
+        access.reason || `Principal '${context.principal_id}' lacks active capability grant for ${keys.join(' or ')}.`
+      );
+    }
+    return;
+  }
+
+  // Generic capability key check
+  const activeGrants = await (service as any).getActiveGrantsForPrincipal(context.principal_id);
+  const hasKey = activeGrants.some((g: any) => keys.includes(g.capability_key));
+  if (!hasKey) {
+    throw new UnauthorizedAccessError(
+      `Principal '${context.principal_id}' lacks active restricted capability grant for '${keys.join(', ')}'.`
+    );
+  }
+}

@@ -32,9 +32,11 @@ import {
 import {
   GOLDEN_CORPUS_FIXTURES,
   PRODUCTION_REGRESSION_THRESHOLDS,
-  GoldenCorpusEvaluationEngine
+  GoldenCorpusEvaluationEngine,
+  runEvaluationVerificationTests
 } from '../../../../../packages/workflow/src/evaluation.ts';
-import { runEvaluationVerificationTests } from '../../../../../packages/workflow/src/evaluation.test.ts';
+import { FieldHelpTooltip } from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 interface GoldenCorpusWorkflowViewProps {
   currentRole: string;
@@ -72,11 +74,10 @@ export const GoldenCorpusWorkflowView: React.FC<GoldenCorpusWorkflowViewProps> =
   const handleRunEvaluation = async (simulate: boolean = simulateRegression) => {
     setEvaluating(true);
     try {
-      const res = await fetch('/api/dev/evaluation/run', {
+      const res = await authenticatedFetch('/api/dev/evaluation/run', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Role': currentRole
         },
         body: JSON.stringify({
           engineVersion,
@@ -122,11 +123,10 @@ export const GoldenCorpusWorkflowView: React.FC<GoldenCorpusWorkflowViewProps> =
   const handleRunVerification = async () => {
     setVerifying(true);
     try {
-      const res = await fetch('/api/dev/evaluation/verify', {
+      const res = await authenticatedFetch('/api/dev/evaluation/verify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Role': currentRole
         }
       });
       if (res.ok) {
@@ -168,6 +168,7 @@ export const GoldenCorpusWorkflowView: React.FC<GoldenCorpusWorkflowViewProps> =
                   <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 font-mono">
                     19 Families Active
                   </span>
+                  <FieldHelpTooltip customTitle="Golden Corpus Evaluation" customDescription="Exhaustive benchmark suite comparing candidate release versions against baseline ground-truth test cases to ensure zero safety or policy regressions." />
                 </h2>
                 <p className="text-sm text-slate-400 font-mono">
                   Automated CI Release Gates • Zero Policy Regressions • 100% RLS Tenant Isolation • NFR-EVAL
@@ -285,6 +286,7 @@ export const GoldenCorpusWorkflowView: React.FC<GoldenCorpusWorkflowViewProps> =
                     }`}>
                       {currentDecision.gateStatus}
                     </span>
+                    <FieldHelpTooltip customTitle="Production Release Gate" customDescription="Automated gate enforcing strict mathematical non-regression invariant: blocking any release that degrades security score or introduces new taint reachability." />
                   </div>
                   <p className="text-sm mt-1 opacity-90">{currentDecision.summary}</p>
                   <div className="flex items-center space-x-4 text-xs font-mono mt-2 text-slate-400">

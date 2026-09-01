@@ -7,6 +7,59 @@ import { EmbeddingProvider } from '../types.ts';
 
 export class MultiModalRetrievers {
   /**
+   * Evaluates if a projection or document is authorized under composition risk filtering.
+   * Default composition rule: only draw from agents classified LOW_RISK or explicitly APPROVED,
+   * never from HIGH_RISK, CRITICAL, or QUARANTINED source agents.
+   */
+  public static isDocumentCompositionSafe(
+    proj: { exact_keywords?: Record<string, any>; payload?: Record<string, any>; agent_id?: string | null; object_type?: string; entity_ref_id?: string },
+    corpus: KnowledgeCorpusManager
+  ): boolean {
+    const kw = proj.exact_keywords || {};
+    const payload = proj.payload || {};
+
+    const riskBand = String(kw.risk_band || payload.risk_band || '').toUpperCase();
+    const lifecycleStatus = String(
+      kw.lifecycle_state || kw.lifecycle_status || kw.status || 
+      payload.lifecycle_state || payload.lifecycle_status || payload.status || ''
+    ).toUpperCase();
+
+    // Explicitly forbidden statuses/risks
+    if (riskBand.includes('HIGH') || riskBand.includes('CRITICAL')) return false;
+    if (lifecycleStatus.includes('QUARANTIN') || lifecycleStatus.includes('REVOK') || lifecycleStatus.includes('REJECT')) return false;
+
+    // Check parent agent projection if linked
+    const targetAgentId = proj.agent_id || (proj.object_type === 'agent' ? proj.entity_ref_id : null);
+    if (targetAgentId) {
+      const parentAgentProj = Array.from(corpus.getProjections().values()).find(
+        p => p.object_type === 'agent' && (p.entity_ref_id === targetAgentId || p.exact_keywords?.agent_id === targetAgentId)
+      );
+      
+      if (parentAgentProj) {
+        const pKw = parentAgentProj.exact_keywords || {};
+        const pPayload = parentAgentProj.payload || {};
+        const pRisk = String(pKw.risk_band || pPayload.risk_band || '').toUpperCase();
+        const pStatus = String(
+          pKw.lifecycle_state || pKw.lifecycle_status || pKw.status || 
+          pPayload.lifecycle_state || pPayload.lifecycle_status || pPayload.status || ''
+        ).toUpperCase();
+
+        if (pRisk.includes('HIGH') || pRisk.includes('CRITICAL')) return false;
+        if (pStatus.includes('QUARANTIN') || pStatus.includes('REVOK') || pStatus.includes('REJECT')) return false;
+        if (pRisk.includes('LOW') || pStatus.includes('APPROV')) return true;
+      }
+    }
+
+    // Direct check on this projection
+    if (riskBand.includes('LOW') || lifecycleStatus.includes('APPROV')) return true;
+
+    // If ontology or universal rule not linked to high-risk entity, allow
+    if (proj.object_type === 'ontology' || proj.object_type === 'policy') return true;
+
+    return false;
+  }
+
+  /**
    * 1. Relational & Exact Keyword Retriever
    */
   public static async retrieveRelationalExact(
@@ -23,6 +76,11 @@ export class MultiModalRetrievers {
       // Authorization Check Pre-Filter
       if (proj.security_classification_rank > plan.max_security_rank) continue;
       if (proj.vault_restricted && !plan.allow_vault_restricted) continue;
+
+      // Composition Risk Filter: only LOW_RISK / APPROVED
+      if (plan.composition_safe_only && !MultiModalRetrievers.isDocumentCompositionSafe(proj, corpus)) {
+        continue;
+      }
 
       // Scoped Agent & Version Filtering
       if (understanding.scoped_agent_id && proj.agent_id && proj.agent_id !== understanding.scoped_agent_id) {
@@ -130,7 +188,13 @@ export class MultiModalRetrievers {
 
     const projections = corpus.getProjections();
 
-    return searchResults.map((r) => {
+    const filtered = searchResults.filter(r => {
+      if (!plan.composition_safe_only) return true;
+      const proj = projections.get(r.exact_keywords?.entity_ref_id || '') || projections.get(r.knowledge_object_id);
+      return MultiModalRetrievers.isDocumentCompositionSafe(proj || r, corpus);
+    });
+
+    return filtered.map((r) => {
       const proj = projections.get(r.exact_keywords?.entity_ref_id || '');
       return {
         doc_id: `vec-${r.chunk_id}`,
@@ -171,6 +235,7 @@ export class MultiModalRetrievers {
     for (const proj of projections.values()) {
       if (proj.security_classification_rank > plan.max_security_rank) continue;
       if (proj.vault_restricted && !plan.allow_vault_restricted) continue;
+      if (plan.composition_safe_only && !MultiModalRetrievers.isDocumentCompositionSafe(proj, corpus)) continue;
 
       let graphMatch = false;
       let hops = 1;
@@ -259,6 +324,7 @@ export class MultiModalRetrievers {
     for (const claimProj of targetClaims) {
       if (claimProj.security_classification_rank > plan.max_security_rank) continue;
       if (claimProj.vault_restricted && !plan.allow_vault_restricted) continue;
+      if (plan.composition_safe_only && !MultiModalRetrievers.isDocumentCompositionSafe(claimProj, corpus)) continue;
 
       const trail: string[] = [`Claim:${claimProj.entity_ref_id}`];
 

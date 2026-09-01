@@ -13,6 +13,7 @@ export * from './security/network-policy.ts';
 export * from './scenarios/registry.ts';
 export * from './evasion/detector.ts';
 export * from './lifecycle/manager.ts';
+export * from './comparison.ts';
 export * from './engine.ts';
 
 import { SandboxOrchestrationEngine, RunSandboxScenarioOptions } from './engine.ts';

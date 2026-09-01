@@ -24,6 +24,7 @@ export interface RetrievalContextOptions {
   scoped_agent_version_id?: string;
   budget_max_records?: number;
   budget_max_tokens?: number;
+  composition_safe_only?: boolean;
 }
 
 export class HybridRetrievalService {
@@ -68,6 +69,7 @@ export class HybridRetrievalService {
       allow_vault_restricted: callerHasVault,
       budget_max_records: options.budget_max_records ?? 20,
       budget_max_tokens: options.budget_max_tokens ?? 8192,
+      composition_safe_only: options.composition_safe_only ?? false,
     });
 
     const gatheredDocs: RetrievedDocument[] = [];
@@ -110,6 +112,10 @@ export class HybridRetrievalService {
         continue;
       }
       if (doc.vault_restricted && !callerHasVault) {
+        unauthorizedFiltered++;
+        continue;
+      }
+      if (plan.composition_safe_only && !MultiModalRetrievers.isDocumentCompositionSafe(doc, this.corpus)) {
         unauthorizedFiltered++;
         continue;
       }

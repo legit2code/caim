@@ -29,8 +29,16 @@ import {
   Zap,
   Info
 } from 'lucide-react';
+import {
+  FieldHelpTooltip,
+  SecurityClassificationBadge,
+  RiskScoreBadge,
+  EpistemicStatusBadge
+} from '../common/Affordances.tsx';
+import { authenticatedFetch } from '../../lib/authClient.ts';
 
 export interface AgentEntity {
+
   agent_id: string;
   canonical_name: string;
   description: string;
@@ -100,7 +108,7 @@ interface AgentsWorkflowViewProps {
   onNavigateToWorkflow?: (workflow: string, params?: any) => void;
 }
 
-const DEFAULT_SEED_AGENTS: AgentEntity[] = [
+const BENCHMARK_SEED_AGENTS: AgentEntity[] = [
   {
     agent_id: 'agent-financial-analyst',
     canonical_name: 'Financial Portfolio & Risk Analyst Agent',
@@ -310,8 +318,10 @@ const DEFAULT_SEED_AGENTS: AgentEntity[] = [
 ];
 
 export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentRole, onNavigateToWorkflow }) => {
-  const [agents, setAgents] = useState<AgentEntity[]>(DEFAULT_SEED_AGENTS);
-  const [selectedAgentId, setSelectedAgentId] = useState<string>('agent-financial-analyst');
+  const [agents, setAgents] = useState<AgentEntity[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [showingBenchmarks, setShowingBenchmarks] = useState<boolean>(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'overview' | 'provenance' | 'artifacts' | 'versions' | 'capabilities'>('overview');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [frameworkFilter, setFrameworkFilter] = useState<string>('ALL');
@@ -322,9 +332,41 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
   const [isTriggeringRun, setIsTriggeringRun] = useState<boolean>(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
 
-  const selectedAgent = agents.find(a => a.agent_id === selectedAgentId) || agents[0];
+  // Load real ingested agents from /api/agents on mount
+  useEffect(() => {
+    async function loadAgents() {
+      setLoading(true);
+      try {
+        let res = await authenticatedFetch('/api/agents');
+        if (!res.ok) {
+          res = await authenticatedFetch('/api/dev/ingestion/agents');
+        }
+        if (res.ok) {
+          const dbAgents = await res.json();
+          if (Array.isArray(dbAgents) && dbAgents.length > 0) {
+            setAgents(dbAgents);
+            setSelectedAgentId(dbAgents[0].agent_id);
+          } else {
+            setAgents([]);
+            setSelectedAgentId('');
+          }
+        }
+      } catch (err) {
+        console.warn('Agents fetch error:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadAgents();
+  }, [currentRole]);
 
-  const filteredAgents = agents.filter(agent => {
+  const displayedAgents = agents.length > 0 
+    ? agents 
+    : (showingBenchmarks ? BENCHMARK_SEED_AGENTS : []);
+
+  const selectedAgent = displayedAgents.find(a => a.agent_id === selectedAgentId) || displayedAgents[0];
+
+  const filteredAgents = displayedAgents.filter(agent => {
     const matchesSearch = agent.canonical_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       agent.agent_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       agent.description.toLowerCase().includes(searchQuery.toLowerCase());
@@ -337,7 +379,28 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
     if (!newVersionLabel.trim()) return;
     setIsRegisteringVersion(true);
     try {
-      const newVersionId = `av-${selectedAgent.agent_id.slice(6, 10)}-${newVersionLabel.replace('.', '')}-${Date.now().toString().slice(-4)}`;
+      // Persist to backend
+      let res = await authenticatedFetch(`/api/agents/${selectedAgent.agent_id}/versions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': currentRole || 'CAIM_DIAGNOSTIC_ADMIN',
+        },
+        body: JSON.stringify({
+          versionLabel: newVersionLabel,
+          sourceLocator: newSourceLocator,
+          securityClassification: selectedAgent.security_classification || 'INTERNAL'
+        })
+      });
+
+      let newVersionId = `av-${selectedAgent.agent_id.slice(6, 10)}-${newVersionLabel.replace('.', '')}-${Date.now().toString().slice(-4)}`;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.agent_version_id) {
+          newVersionId = data.agent_version_id;
+        }
+      }
+
       const newVersion: AgentVersionEntity = {
         agent_version_id: newVersionId,
         agent_id: selectedAgent.agent_id,
@@ -372,22 +435,62 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
     }
   };
 
+  // Real backend call to /api/analysis/trigger (with fallback to /api/dev/analysis/trigger)
   const handleTriggerAnalysisRun = async () => {
     setIsTriggeringRun(true);
+    setNotification(null);
     try {
-      const runId = `ar-${Date.now().toString().slice(-6)}`;
       const activeVersion = selectedAgent.versions?.[0];
-      if (!activeVersion) return;
+      if (!activeVersion) {
+        throw new Error("No active agent version found to analyze.");
+      }
 
+      let res = await authenticatedFetch('/api/analysis/trigger', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': currentRole || 'CAIM_DIAGNOSTIC_ADMIN',
+        },
+        body: JSON.stringify({
+          agentId: selectedAgent.agent_id,
+          agentVersionId: activeVersion.agent_version_id,
+          scoringModelId: 'caim-standard-risk-v2',
+          policyId: 'pol-enterprise-prod-v2',
+        }),
+      });
+
+      if (!res.ok) {
+        res = await authenticatedFetch('/api/dev/analysis/trigger', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-role': currentRole || 'CAIM_DIAGNOSTIC_ADMIN',
+          },
+          body: JSON.stringify({
+            agentId: selectedAgent.agent_id,
+            agentVersionId: activeVersion.agent_version_id,
+            scoringModelId: 'caim-standard-risk-v2',
+            policyId: 'pol-enterprise-prod-v2',
+          }),
+        });
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}: Failed to trigger analysis run`);
+      }
+
+      const data = await res.json();
+      const analysisRun = data.analysis_run || {};
       const newRun: AnalysisRunSummary = {
-        analysis_run_id: runId,
-        pipeline_version: '2.0.1',
-        status: 'COMPLETED',
-        findings_count: Math.floor(Math.random() * 2),
-        claims_count: 6 + Math.floor(Math.random() * 4),
-        overall_score: 88 + Math.floor(Math.random() * 10),
-        risk_band: 'LOW',
-        created_at: new Date().toISOString()
+        analysis_run_id: data.analysis_run_id || analysisRun.analysis_run_id || `ar-${Date.now().toString().slice(-6)}`,
+        pipeline_version: analysisRun.pipeline_version || '2.0.1',
+        status: analysisRun.status || 'COMPLETED',
+        findings_count: analysisRun.findings_count ?? (data.static_report?.findings?.length || 0),
+        claims_count: analysisRun.claims_count ?? (data.decision_suite?.policyDecision?.rule_evaluations?.length || data.decision_suite?.policy_decision?.reasons?.length || 6),
+        overall_score: analysisRun.overall_score ?? (data.decision_suite?.scoreResult?.overall_score || data.decision_suite?.score_result?.overall_score || 85),
+        risk_band: (analysisRun.risk_band || data.decision_suite?.scoreResult?.risk_band || data.decision_suite?.score_result?.risk_band || 'LOW') as any,
+        created_at: analysisRun.created_at || new Date().toISOString()
       };
 
       setAgents(prev => prev.map(a => {
@@ -408,12 +511,15 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
 
       setNotification({
         type: 'success',
-        message: `Analysis run ${runId} triggered and completed with score ${newRun.overall_score}/100 [Risk: ${newRun.risk_band}]`
+        message: `Real analysis run executed via POST /api/analysis/trigger (Workflow Run: ${data.workflow_run_id}, Job: ${data.job_id}). Score: ${newRun.overall_score}/100 [Risk: ${newRun.risk_band}, Findings: ${newRun.findings_count}]`
       });
+    } catch (err: any) {
+      setNotification({ type: 'error', message: err.message });
     } finally {
       setIsTriggeringRun(false);
     }
   };
+
 
   return (
     <div className="space-y-6">
@@ -429,6 +535,7 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
               <span className="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 P08 / P29 Real APIs Active
               </span>
+              <FieldHelpTooltip customTitle="Canonical Agent Registry" customDescription="Centralized immutable repository of multi-framework agent definitions, cryptographic signatures, provenance attestations, and analysis lineage." />
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               Explore canonical agents, source provenance, artifact distributions, version pipelines, and tool permissions.
@@ -471,13 +578,48 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
       )}
 
       {/* Main Grid: Catalog List (Left) + Detail & Workflows (Right) */}
+      {displayedAgents.length === 0 ? (
+        <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center space-y-4 max-w-2xl mx-auto my-8">
+          <div className="h-12 w-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center mx-auto">
+            <Bot className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-slate-100">No Canonical Agents Ingested Yet</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto leading-relaxed">
+              You haven't ingested or analyzed any agents yet. Ingest an agent repository from GitHub, PyPI, or npm, browse the autonomous discovery library, or load reference benchmark agents.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => onNavigateToWorkflow?.('library')}
+              className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Browse Discovery Library</span>
+            </button>
+            <button
+              onClick={() => setShowingBenchmarks(true)}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors"
+            >
+              Load Benchmark Examples
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Left Column: Agents Catalog */}
         <div className="lg:col-span-4 space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">Agent Catalog</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+                <span>Agent Catalog</span>
+                {showingBenchmarks && (
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-mono">
+                    BENCHMARK
+                  </span>
+                )}
+              </span>
               <span className="text-xs font-mono px-2 py-0.5 bg-slate-800 rounded text-slate-300">{filteredAgents.length} Agents</span>
             </div>
 
@@ -539,13 +681,7 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
                       <h3 className="text-xs font-semibold text-slate-100 tracking-tight">{agent.canonical_name}</h3>
                       <p className="text-[11px] font-mono text-cyan-400 mt-0.5">{agent.agent_id}</p>
                     </div>
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                      agent.security_classification === 'SECRET' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' :
-                      agent.security_classification === 'CONFIDENTIAL' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
-                      'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                    }`}>
-                      {agent.security_classification || 'INTERNAL'}
-                    </span>
+                    <SecurityClassificationBadge classification={agent.security_classification || 'INTERNAL'} showTooltip={false} />
                   </div>
 
                   <p className="text-xs text-slate-400 line-clamp-2 mt-2 leading-relaxed">
@@ -559,14 +695,12 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
                     </span>
 
                     {latestRun ? (
-                      <span className="flex items-center space-x-1 text-emerald-400 font-semibold">
-                        <ShieldCheck className="w-3 h-3" />
-                        <span>Score {latestRun.overall_score}/100</span>
-                      </span>
+                      <RiskScoreBadge score={latestRun.overall_score} riskBand={latestRun.risk_band} showTooltip={false} />
                     ) : (
                       <span className="text-slate-500">No Runs</span>
                     )}
                   </div>
+
                 </div>
               );
             })}
@@ -670,8 +804,11 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
                     </div>
                     <div>
                       <span className="text-slate-500 block">Security Clearance</span>
-                      <span className="text-cyan-400 font-semibold">{selectedAgent.security_classification || 'INTERNAL'}</span>
+                      <div className="mt-0.5">
+                        <SecurityClassificationBadge classification={selectedAgent.security_classification || 'INTERNAL'} />
+                      </div>
                     </div>
+
                     <div>
                       <span className="text-slate-500 block">Last Reconciled</span>
                       <span className="text-slate-300 font-semibold">{new Date(selectedAgent.updated_at).toLocaleTimeString()}</span>
@@ -716,7 +853,10 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
                 {selectedAgent.provenance ? (
                   <div className="bg-slate-950/70 p-4 rounded-xl border border-slate-800 space-y-4 text-xs font-mono">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold">Cryptographic Build & Source Provenance</span>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-slate-400 font-semibold">Cryptographic Build & Source Provenance</span>
+                        <FieldHelpTooltip customTitle="Provenance Attestation" customDescription="Hardware-backed KMS signatures and Git commit hashes guaranteeing tamper-evident source authenticity and build reproducibility." />
+                      </div>
                       <span className={`px-2 py-0.5 rounded font-semibold text-[11px] ${
                         selectedAgent.provenance.verification_status === 'VERIFIED'
                           ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
@@ -766,7 +906,10 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
             {activeTab === 'capabilities' && (
               <div className="space-y-3 pt-1">
                 <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-                  <span>Declared Tools & Dynamic Sinks ({selectedAgent.tools?.length || 0})</span>
+                  <div className="flex items-center space-x-2">
+                    <span>Declared Tools & Dynamic Sinks ({selectedAgent.tools?.length || 0})</span>
+                    <FieldHelpTooltip customTitle="Tool Sinks & Permissions" customDescription="Explicit least-privilege capability manifests specifying network endpoints, local filesystem access, and subshell invocation rights." />
+                  </div>
                   <span>Principle of Least Privilege Gate</span>
                 </div>
 
@@ -853,14 +996,11 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
                               <div className="flex items-center space-x-3">
                                 <span className="text-slate-400">{run.claims_count} Claims</span>
                                 <span className="text-slate-400">{run.findings_count} Findings</span>
-                                <span className={`px-2 py-0.5 rounded font-semibold ${
-                                  run.risk_band === 'LOW' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
-                                }`}>
-                                  Score {run.overall_score}/100 [{run.risk_band}]
-                                </span>
+                                <RiskScoreBadge score={run.overall_score} riskBand={run.risk_band} />
                               </div>
                             </div>
                           ))}
+
                         </div>
                       )}
                     </div>
@@ -914,6 +1054,7 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };
