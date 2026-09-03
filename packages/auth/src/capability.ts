@@ -29,6 +29,8 @@ export class CapabilityGrantService {
   public ensureDefaultGrants(): void {
     const adminGrantId = '00000000-0000-0000-0002-000000000001';
     const adminPrincipalId = '00000000-0000-0000-0001-000000000001';
+    const serverAdminPrincipalId = '00000000-0000-0000-0001-admin0000000';
+    const serverAdminGrantId = '00000000-0000-0000-0002-admin0000000';
 
     if (!CapabilityGrantService.inMemoryGrants.has(adminGrantId)) {
       CapabilityGrantService.inMemoryGrants.set(adminGrantId, {
@@ -37,6 +39,19 @@ export class CapabilityGrantService {
         principal_id: adminPrincipalId,
         granted_by: adminPrincipalId,
         justification: 'Platform owner — unrestricted composer access',
+        scope_limitations: null,
+        granted_at: new Date().toISOString(),
+        revoked_at: null,
+      });
+    }
+
+    if (!CapabilityGrantService.inMemoryGrants.has(serverAdminGrantId)) {
+      CapabilityGrantService.inMemoryGrants.set(serverAdminGrantId, {
+        grant_id: serverAdminGrantId,
+        capability_key: 'composer:full_access',
+        principal_id: serverAdminPrincipalId,
+        granted_by: serverAdminPrincipalId,
+        justification: 'Platform admin (admin@caim.internal) — unrestricted composer access',
         scope_limitations: null,
         granted_at: new Date().toISOString(),
         revoked_at: null,

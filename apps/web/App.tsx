@@ -57,6 +57,7 @@ import { RiskPolicyWorkflowView } from './src/components/views/RiskPolicyWorkflo
 import { TraceabilityDodWorkflowView } from './src/components/views/TraceabilityDodWorkflowView.tsx';
 import { FieldHelpTooltip } from './src/components/common/Affordances.tsx';
 import { FirstVisitWalkthroughModal } from './src/components/common/FirstVisitWalkthroughModal.tsx';
+import { ChangePasswordModal } from './src/components/auth/ChangePasswordModal.tsx';
 import { AuthProvider, useAuth } from './src/context/AuthContext.tsx';
 import { LoginView } from './src/components/auth/LoginView.tsx';
 import { authenticatedFetch } from './src/lib/authClient.ts';
@@ -249,6 +250,7 @@ function AppContent() {
   const [showWalkthrough, setShowWalkthrough] = useState<boolean>(() => {
     return !localStorage.getItem('caim_walkthrough_seen');
   });
+  const [showChangePassword, setShowChangePassword] = useState<boolean>(false);
 
   // Listen to browser forward/back buttons
   useEffect(() => {
@@ -447,6 +449,16 @@ function AppContent() {
               </span>
               <span>Engines Online (71/71)</span>
             </div>
+
+            {/* Password Rotation Modal Trigger */}
+            <button
+              onClick={() => setShowChangePassword(true)}
+              className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-700/80 text-slate-300 hover:text-cyan-300 text-xs font-mono transition-colors"
+              title="Rotate Account Password & Invalidate Prior Sessions"
+            >
+              <KeyRound className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden md:inline">Password</span>
+            </button>
 
             {/* User Walkthrough Guide Trigger */}
             <button
@@ -670,6 +682,12 @@ function AppContent() {
         isOpen={showWalkthrough} 
         onClose={() => setShowWalkthrough(false)} 
         onNavigateToWorkflow={navigateTo} 
+      />
+
+      {/* Account Password Rotation Modal */}
+      <ChangePasswordModal
+        isOpen={showChangePassword}
+        onClose={() => setShowChangePassword(false)}
       />
 
     </div>

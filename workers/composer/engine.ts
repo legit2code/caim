@@ -475,12 +475,14 @@ async function runTool() {
     }
 
     // 3. Resolve tool class or function
-    let ToolClassOrFn = toolModule.default;
-    if (!ToolClassOrFn) {
-      for (const key of Object.keys(toolModule)) {
-        if (typeof toolModule[key] === 'function') {
-          ToolClassOrFn = toolModule[key];
-          break;
+    let ToolClassOrFn = (typeof toolModule === 'function') ? toolModule : (toolModule && toolModule.default ? toolModule.default : toolModule);
+    if (!ToolClassOrFn || typeof ToolClassOrFn !== 'function') {
+      if (typeof toolModule === 'object' && toolModule !== null) {
+        for (const key of Object.keys(toolModule)) {
+          if (typeof toolModule[key] === 'function') {
+            ToolClassOrFn = toolModule[key];
+            break;
+          }
         }
       }
     }
@@ -538,7 +540,10 @@ async function runTool() {
   }
 }
 
-await runTool();
+return runTool().catch((err) => {
+  console.error('[COMPOSER_SANDBOX_RUNNER] Fatal uncaught runner error:', err);
+  process.exit(1);
+});
 `;
 
     const sandboxFiles: Record<string, string> = {
@@ -565,6 +570,7 @@ await runTool();
     // 8. Extract genuine execution output from runner traces
     let parsedExecutionOutput: any = null;
     for (const trace of sandboxResult.raw_traces) {
+      if (trace.startsWith('[EXEC_COMMAND]')) continue;
       const lines = trace.split('\n');
       for (const line of lines) {
         if (line.includes('[COMPOSER_EXEC_OUTPUT]')) {
@@ -687,17 +693,46 @@ export class ${targetName} {
 }
 `;
 
+    const jsCode = `/**
+ * Agent: ${targetName} (Compiled JavaScript Entrypoint for Node.js MicroVM)
+ */
+class ${targetName} {
+  constructor(endpoint = 'http://synthetic-target.local/api/v1') {
+    this.endpoint = endpoint;
+  }
+
+  async execute(input) {
+    const targetUrl = (input && input.syntheticTargetEndpoint) || this.endpoint;
+    const processedData = {
+      ...((input && input.payload) || {}),
+      technique: '${cat}',
+      validatedAt: new Date().toISOString(),
+    };
+
+    return {
+      success: true,
+      status: 'COMPLETED',
+      output: processedData,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+${targetName}.CATEGORY = '${cat}';
+module.exports = { ${targetName}, default: ${targetName} };
+`;
+
     const manifestJson = JSON.stringify({
       name: targetName,
       technique_category: cat,
       version: '1.0.0',
-      entrypoint: 'index.ts',
+      entrypoint: 'index.js',
       source_agents: sources,
       environment: 'SYNTHETIC_SANDBOX',
     }, null, 2);
 
     return {
       'index.ts': code,
+      'index.js': jsCode,
       'agent-manifest.json': manifestJson,
     };
   }

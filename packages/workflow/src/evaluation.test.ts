@@ -9,8 +9,12 @@ import { runEvaluationVerificationTests } from './evaluation.ts';
 export { runEvaluationVerificationTests };
 
 describe('Golden Corpus & Regression Evaluation Verification', () => {
-  it('should run all evaluation verification tests successfully', () => {
-    const res = runEvaluationVerificationTests();
-    expect(res.passed).toBe(true);
+  const res = runEvaluationVerificationTests();
+
+  it.each(res.testResults)('$name', (check) => {
+    expect(
+      check.status,
+      `Verification check "${check.name}" failed: ${check.details}`
+    ).toBe('PASS');
   });
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Lock, 
@@ -13,17 +13,46 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 
+interface DevSeedAccount {
+  email: string;
+  role: string;
+  label: string;
+  description?: string;
+}
+
 interface LoginViewProps {
   onSuccess?: () => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
   const { login } = useAuth();
-  const [email, setEmail] = useState<string>('admin@caim.internal');
-  const [password, setPassword] = useState<string>('Admin2026!SecureRoot#');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<boolean>(false);
+  const [devAccounts, setDevAccounts] = useState<DevSeedAccount[]>([]);
+
+  // Dynamically query server-side dev seed accounts (runtime check: process.env.NODE_ENV !== 'production')
+  useEffect(() => {
+    let isMounted = true;
+    fetch('/api/auth/dev-seed-accounts')
+      .then(async (res) => {
+        if (!res.ok) return { accounts: [] };
+        return res.json();
+      })
+      .then((data) => {
+        if (isMounted && data?.accounts && Array.isArray(data.accounts)) {
+          setDevAccounts(data.accounts);
+        }
+      })
+      .catch(() => {
+        // Ignored in production or when unreachable
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,9 +77,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
     }
   };
 
-  const handleQuickFill = (fillEmail: string, fillPass: string) => {
-    setEmail(fillEmail);
-    setPassword(fillPass);
+  const handleSelectAccount = (selectedEmail: string) => {
+    setEmail(selectedEmail);
     setError(null);
   };
 
@@ -121,7 +149,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@caim.internal"
+                placeholder="user@caim.internal"
                 className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors font-mono"
               />
             </div>
@@ -165,47 +193,38 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
             </button>
           </form>
 
-          {/* Quick-fill Seed Credentials */}
-          <div className="pt-3 border-t border-slate-800 space-y-2.5">
-            <p className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Seeded Principal Quick-Access:</span>
-            </p>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickFill('admin@caim.internal', 'Admin2026!SecureRoot#')}
-                className="p-2.5 text-left bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl transition-all group"
-              >
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-200 group-hover:text-cyan-300">
-                  <span className="flex items-center gap-1">
-                    <UserCheck className="w-3 h-3 text-cyan-400" />
-                    Admin
-                  </span>
-                  <span className="text-[9px] px-1 bg-cyan-500/20 text-cyan-300 rounded font-mono">ROOT</span>
-                </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-1 truncate">admin@caim.internal</div>
-                <div className="text-[9px] text-slate-500 font-mono">Password: Admin2026!SecureRoot#</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('auditor@caim.internal', 'Admin123!Secure')}
-                className="p-2.5 text-left bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl transition-all group"
-              >
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-200 group-hover:text-cyan-300">
-                  <span className="flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                    Auditor
-                  </span>
-                  <span className="text-[9px] px-1 bg-emerald-500/20 text-emerald-300 rounded font-mono">AUDIT</span>
-                </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-1 truncate">auditor@caim.internal</div>
-                <div className="text-[9px] text-slate-500 font-mono">Password: Admin123!Secure</div>
-              </button>
+          {/* Seed Account Quick Selection (Only displayed when server returns active seed accounts) */}
+          {devAccounts.length > 0 && (
+            <div className="pt-3 border-t border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-mono text-amber-400/90">
+                <span className="flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-amber-400" />
+                  [NON-PROD] Select Seed Account Email
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {devAccounts.map((acc) => (
+                  <button
+                    key={acc.email}
+                    type="button"
+                    onClick={() => handleSelectAccount(acc.email)}
+                    className="px-2.5 py-1.5 text-left bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500/40 rounded-lg transition-all text-xs font-mono text-slate-300 hover:text-cyan-300"
+                    title={acc.description || acc.email}
+                  >
+                    <div className="font-semibold text-[11px] flex items-center gap-1">
+                      {acc.role === 'admin' ? (
+                        <UserCheck className="w-3 h-3 text-cyan-400" />
+                      ) : (
+                        <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                      )}
+                      {acc.label}
+                    </div>
+                    <div className="text-[10px] text-slate-400 truncate mt-0.5">{acc.email}</div>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Footer Security Notice */}

@@ -221,6 +221,29 @@ class AuthClient {
 
     return response;
   }
+
+  /**
+   * Performs authenticated password rotation via POST /api/auth/change-password.
+   */
+  public async changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    const res = await this.fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Password change failed with HTTP ${res.status}`);
+    }
+
+    return data;
+  }
 }
 
 export const authClient = new AuthClient();

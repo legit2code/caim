@@ -69,11 +69,17 @@ export async function runAgent(task: string) {
   const [ingestionResult, setIngestionResult] = useState<any | null>(null);
   const [pipelineProgressStep, setPipelineProgressStep] = useState<number>(0);
 
-  const [adapters, setAdapters] = useState([
-    { name: 'GitHub Enterprise Adapter', status: 'HEALTHY', repos_scanned: 14, last_poll: '2 mins ago', rate_limit: '4,890 / 5,000' },
-    { name: 'GitLab Internal Org Adapter', status: 'HEALTHY', repos_scanned: 8, last_poll: '5 mins ago', rate_limit: '9,920 / 10,000' },
-    { name: 'Docker / OCI Registry Adapter', status: 'HEALTHY', repos_scanned: 22, last_poll: '1 min ago', rate_limit: 'Unlimited' },
-    { name: 'PyPI & npm Registry Adapter', status: 'HEALTHY', repos_scanned: 35, last_poll: 'Just now', rate_limit: 'Unlimited' }
+  const [adapters, setAdapters] = useState<{
+    name: string;
+    status: string;
+    repos_scanned?: number | null;
+    last_poll: string;
+    rate_limit: string;
+  }[]>([
+    { name: 'GitHub Enterprise Adapter', status: 'HEALTHY', repos_scanned: undefined, last_poll: '2 mins ago', rate_limit: '4,890 / 5,000' },
+    { name: 'GitLab Internal Org Adapter', status: 'HEALTHY', repos_scanned: undefined, last_poll: '5 mins ago', rate_limit: '9,920 / 10,000' },
+    { name: 'Docker / OCI Registry Adapter', status: 'HEALTHY', repos_scanned: undefined, last_poll: '1 min ago', rate_limit: 'Unlimited' },
+    { name: 'PyPI & npm Registry Adapter', status: 'HEALTHY', repos_scanned: undefined, last_poll: 'Just now', rate_limit: 'Unlimited' }
   ]);
 
   const [candidates, setCandidates] = useState([
@@ -112,7 +118,7 @@ export async function runAgent(task: string) {
             setAdapters(sources.map((s: any) => ({
               name: s.sourceName || `${s.sourceType.toUpperCase()} Adapter`,
               status: s.health?.healthy ? 'HEALTHY' : 'DEGRADED',
-              repos_scanned: Math.floor(Math.random() * 20) + 10,
+              repos_scanned: typeof s.repos_scanned === 'number' ? s.repos_scanned : (typeof s.candidates_scanned === 'number' ? s.candidates_scanned : undefined),
               last_poll: 'Just now',
               rate_limit: s.rateLimit?.remaining ? `${s.rateLimit.remaining} / ${s.rateLimit.limit}` : 'Healthy'
             })));
@@ -153,8 +159,8 @@ export async function runAgent(task: string) {
       const discoveredCount = report.candidates_discovered_total ?? discoveredCandidates.length ?? 5;
 
       if (Array.isArray(discoveredCandidates) && discoveredCandidates.length > 0) {
-        const mapped = discoveredCandidates.map((c: any) => ({
-          candidate_id: c.candidateId || c.candidate_id || `cand-${Math.random().toString(36).slice(2, 8)}`,
+        const mapped = discoveredCandidates.map((c: any, idx: number) => ({
+          candidate_id: c.candidateId || c.candidate_id || `cand-${c.canonicalName || 'disc'}-${idx + 1}`,
           name: c.name || c.canonicalName || 'discovered-autonomous-agent',
           source: c.sourceLocator || c.source || 'github.com/caim-community/discovered-agent',
           confidence: c.confidence || 0.92,
@@ -693,7 +699,7 @@ export async function fetchContext(query: string) {
                   <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-semibold">
                     {ad.status}
                   </span>
-                  <span className="text-slate-500 text-[11px] block mt-1">{ad.repos_scanned} Repos</span>
+                  <span className="text-slate-500 text-[11px] block mt-1">{ad.repos_scanned !== undefined && ad.repos_scanned !== null ? `${ad.repos_scanned} Repos` : '—'}</span>
                 </div>
               </div>
             ))}

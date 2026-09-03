@@ -519,7 +519,7 @@ describe('P06 — Authentication, Roles, RLS & Vault Boundaries Matrix Tests', (
       // 1. Login with seeded admin credentials
       const loginRes = await authService.loginWithPassword({
         email: 'admin@caim.internal',
-        password: 'Admin123!Secure',
+        password: 'Admin#2026$RotatedRootKey!8472',
       });
 
       expect(loginRes.token_type).toBe('Bearer');
@@ -551,6 +551,145 @@ describe('P06 — Authentication, Roles, RLS & Vault Boundaries Matrix Tests', (
       await expect(authService.refreshAccessToken(refreshRes.refresh_token)).rejects.toThrow(
         /Invalid, revoked, or expired refresh token/
       );
+    });
+
+    it('GATE: Admin password is rotated away from old credentials and fallback bypass is eliminated', async () => {
+      const authService = new AuthService();
+
+      // 1. Old shared password fails
+      await expect(
+        authService.loginWithPassword({
+          email: 'admin@caim.internal',
+          password: 'Admin2026!SecureRoot#',
+        })
+      ).rejects.toThrow(/Invalid credentials/);
+
+      // 2. Old auditor password for admin fails (no bypass)
+      await expect(
+        authService.loginWithPassword({
+          email: 'admin@caim.internal',
+          password: 'Admin123!Secure',
+        })
+      ).rejects.toThrow(/Invalid credentials/);
+
+      // 3. Rotated high-entropy password succeeds
+      const adminLogin = await authService.loginWithPassword({
+        email: 'admin@caim.internal',
+        password: 'Admin#2026$RotatedRootKey!8472',
+      });
+      expect(adminLogin.access_token).toBeDefined();
+      expect(adminLogin.principal.email).toBe('admin@caim.internal');
+    });
+
+    it('GATE: validatePasswordStrength enforces 12+ chars, complexity, and blocks known breached passwords', () => {
+      // 1. Too short (< 12)
+      expect(AuthService.validatePasswordStrength('Short1!').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('Short1!').error).toContain('at least 12 characters');
+
+      // 2. Missing uppercase
+      expect(AuthService.validatePasswordStrength('lowercaseonly123!@#').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('lowercaseonly123!@#').error).toContain('uppercase letter');
+
+      // 3. Missing lowercase
+      expect(AuthService.validatePasswordStrength('UPPERCASEONLY123!@#').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('UPPERCASEONLY123!@#').error).toContain('lowercase letter');
+
+      // 4. Missing number
+      expect(AuthService.validatePasswordStrength('NoNumbersIncluded!@#$').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('NoNumbersIncluded!@#$').error).toContain('numerical digit');
+
+      // 5. Missing special character
+      expect(AuthService.validatePasswordStrength('NoSpecialCharacters1234').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('NoSpecialCharacters1234').error).toContain('special character');
+
+      // 6. Known breached password
+      expect(AuthService.validatePasswordStrength('Admin2026!SecureRoot#').valid).toBe(false);
+      expect(AuthService.validatePasswordStrength('Admin2026!SecureRoot#').error).toContain('known-compromised');
+
+      // 7. Strong valid password
+      expect(AuthService.validatePasswordStrength('Secure#Rotated2026!Key$77').valid).toBe(true);
+    });
+
+    it('GATE: AuthService.changePassword updates bcrypt hash and invalidates all existing refresh tokens', async () => {
+      const authService = new AuthService();
+
+      // 1. Log in auditor to create an active session
+      const login1 = await authService.loginWithPassword({
+        email: 'auditor@caim.internal',
+        password: 'Admin123!Secure',
+      });
+      const principalId = login1.principal.principal_id;
+      const initialRefreshToken = login1.refresh_token;
+
+      // 2. Log in a second session for the same principal
+      const login2 = await authService.loginWithPassword({
+        email: 'auditor@caim.internal',
+        password: 'Admin123!Secure',
+      });
+      const secondRefreshToken = login2.refresh_token;
+
+      // 3. Re-verification failure with incorrect current password
+      await expect(
+        authService.changePassword({
+          principalId,
+          currentPassword: 'WrongCurrentPassword!123',
+          newPassword: 'BrandNew#SecurePassword2026!',
+        })
+      ).rejects.toThrow(/Incorrect current password/);
+
+      // 4. Rejection when new password is same as current password
+      await expect(
+        authService.changePassword({
+          principalId,
+          currentPassword: 'Admin123!Secure',
+          newPassword: 'Admin123!Secure',
+        })
+      ).rejects.toThrow(/New password cannot be identical/);
+
+      // 5. Rejection when new password is weak or breached
+      await expect(
+        authService.changePassword({
+          principalId,
+          currentPassword: 'Admin123!Secure',
+          newPassword: 'weak',
+        })
+      ).rejects.toThrow(/at least 12 characters/);
+
+      // 6. Successful password rotation
+      const result = await authService.changePassword({
+        principalId,
+        currentPassword: 'Admin123!Secure',
+        newPassword: 'BrandNew#SecurePassword2026!',
+      });
+      expect(result.success).toBe(true);
+      expect(result.invalidatedSessionsCount).toBeGreaterThanOrEqual(2);
+
+      // 7. Old password no longer works
+      await expect(
+        authService.loginWithPassword({
+          email: 'auditor@caim.internal',
+          password: 'Admin123!Secure',
+        })
+      ).rejects.toThrow(/Invalid credentials/);
+
+      // 8. New password works successfully
+      const newLogin = await authService.loginWithPassword({
+        email: 'auditor@caim.internal',
+        password: 'BrandNew#SecurePassword2026!',
+      });
+      expect(newLogin.access_token).toBeDefined();
+
+      // 9. Prior refresh tokens (sessions created before password change) are completely invalidated
+      await expect(authService.refreshAccessToken(initialRefreshToken)).rejects.toThrow(
+        /Invalid, revoked, or expired refresh token/
+      );
+      await expect(authService.refreshAccessToken(secondRefreshToken)).rejects.toThrow(
+        /Invalid, revoked, or expired refresh token/
+      );
+
+      // 10. Newly issued refresh token after rotation works normally
+      const refreshedNew = await authService.refreshAccessToken(newLogin.refresh_token);
+      expect(refreshedNew.access_token).toBeDefined();
     });
   });
 });

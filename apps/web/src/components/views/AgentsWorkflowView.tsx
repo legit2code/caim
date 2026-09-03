@@ -394,11 +394,18 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
       });
 
       let newVersionId = `av-${selectedAgent.agent_id.slice(6, 10)}-${newVersionLabel.replace('.', '')}-${Date.now().toString().slice(-4)}`;
+      let realContentHash = '';
       if (res.ok) {
         const data = await res.json();
         if (data.agent_version_id) {
           newVersionId = data.agent_version_id;
         }
+        if (data.content_hash || data.content_fingerprint) {
+          realContentHash = data.content_hash || data.content_fingerprint;
+        }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to register version on backend');
       }
 
       const newVersion: AgentVersionEntity = {
@@ -406,7 +413,7 @@ export const AgentsWorkflowView: React.FC<AgentsWorkflowViewProps> = ({ currentR
         agent_id: selectedAgent.agent_id,
         version_label: newVersionLabel,
         source_locator: newSourceLocator,
-        content_hash: `sha256:${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`,
+        content_hash: realContentHash,
         security_classification: selectedAgent.security_classification || 'INTERNAL',
         status: 'ACTIVE',
         created_at: new Date().toISOString(),

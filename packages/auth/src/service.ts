@@ -57,7 +57,7 @@ export class AuthService {
    */
   public ensureDefaultPrincipals() {
     const defaultAccounts: Array<{ email: string; pass: string; roles: BusinessRole[]; tenant_id?: string }> = [
-      { email: 'admin@caim.internal', pass: 'Admin2026!SecureRoot#', roles: ['admin', 'operator', 'auditor', 'reviewer', 'analyst', 'user'] },
+      { email: 'admin@caim.internal', pass: 'Admin#2026$RotatedRootKey!8472', roles: ['admin', 'operator', 'auditor', 'reviewer', 'analyst', 'user'] },
       { email: 'auditor@caim.internal', pass: 'Admin123!Secure', roles: ['auditor', 'analyst', 'user'] },
       { email: 'analyst@caim.internal', pass: 'Analyst123!Secure', roles: ['analyst', 'user'] },
       { email: 'reviewer@caim.internal', pass: 'Reviewer123!Secure', roles: ['reviewer', 'release_approver', 'user'] },
@@ -167,12 +167,7 @@ export class AuthService {
       throw new Error('Invalid credentials: user not found.');
     }
 
-    let isValid = await verifyPassword(credentials.password, principal.hashed_password);
-    if (!isValid && normalizedEmail === 'admin@caim.internal') {
-      if (credentials.password === 'Admin123!Secure' || credentials.password === 'Admin2026!SecureRoot#') {
-        isValid = true;
-      }
-    }
+    const isValid = await verifyPassword(credentials.password, principal.hashed_password);
 
     if (!isValid) {
       throw new Error('Invalid credentials: incorrect password.');
@@ -306,5 +301,165 @@ export class AuthService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Validates password strength against length policy, complexity requirements, and known-compromised dictionaries.
+   */
+  public static validatePasswordStrength(password: string): { valid: boolean; error?: string } {
+    if (!password || typeof password !== 'string') {
+      return { valid: false, error: 'Password must be a non-empty string.' };
+    }
+    if (password.length < 12) {
+      return { valid: false, error: 'Password must be at least 12 characters in length.' };
+    }
+    if (!/[A-Z]/.test(password)) {
+      return { valid: false, error: 'Password must contain at least one uppercase letter (A-Z).' };
+    }
+    if (!/[a-z]/.test(password)) {
+      return { valid: false, error: 'Password must contain at least one lowercase letter (a-z).' };
+    }
+    if (!/[0-9]/.test(password)) {
+      return { valid: false, error: 'Password must contain at least one numerical digit (0-9).' };
+    }
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password)) {
+      return { valid: false, error: 'Password must contain at least one special character (!@#$%^&*...).' };
+    }
+
+    const lower = password.toLowerCase();
+    const knownBreached = [
+      'admin2026!secureroot#',
+      'admin123!secure',
+      'password123456',
+      'password123!',
+      '123456789012',
+      'administrator',
+      'qwertyuiop12',
+      'letmein12345',
+      'welcome123456!',
+      'rootadmin2026',
+    ];
+
+    if (knownBreached.some((b) => lower === b || (b.length >= 8 && lower.includes(b)))) {
+      return {
+        valid: false,
+        error: 'The requested password is in a known-compromised or weak password dictionary. Please choose a strong, unique password.',
+      };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Authenticated password rotation for a principal.
+   * Re-verifies current password against stored bcrypt hash, validates strength,
+   * updates bcrypt hash (10 rounds), and invalidates ALL prior refresh tokens for that principal.
+   */
+  public async changePassword(input: {
+    principalId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<{ success: boolean; message: string; principalId: string; invalidatedSessionsCount: number }> {
+    if (!input.principalId) {
+      throw new Error('Missing principal ID.');
+    }
+    if (!input.currentPassword || !input.newPassword) {
+      throw new Error('Both current password and new password are required.');
+    }
+
+    // 1. Locate principal
+    let principal: PrincipalRecord | undefined;
+    for (const p of AuthService.inMemoryPrincipals.values()) {
+      if (p.principal_id === input.principalId) {
+        principal = p;
+        break;
+      }
+    }
+
+    if (!principal && this.dbClient) {
+      try {
+        const res = await this.dbClient.query('SELECT * FROM security.principals WHERE principal_id = $1;', [input.principalId]);
+        if (res && res.rows && res.rows.length > 0) {
+          const row = res.rows[0];
+          principal = {
+            principal_id: row.principal_id,
+            email: row.email,
+            hashed_password: row.hashed_password,
+            external_identity_provider_id: row.external_identity_provider_id,
+            roles: Array.isArray(row.roles) ? row.roles : ['user'],
+            tenant_id: row.tenant_id,
+            created_at: row.created_at,
+            last_login_at: row.last_login_at,
+          };
+          AuthService.inMemoryPrincipals.set(row.email, principal);
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    if (!principal) {
+      throw new Error('Principal not found.');
+    }
+
+    // 2. Re-verify current password against stored bcrypt hash
+    const isCurrentValid = await verifyPassword(input.currentPassword, principal.hashed_password);
+    if (!isCurrentValid) {
+      throw new Error('Incorrect current password. Re-verification failed.');
+    }
+
+    // 3. Prevent setting the exact same password
+    if (input.currentPassword === input.newPassword) {
+      throw new Error('New password cannot be identical to current password.');
+    }
+
+    // 4. Validate new password strength policy & known-breached list
+    const validation = AuthService.validatePasswordStrength(input.newPassword);
+    if (!validation.valid) {
+      throw new Error(validation.error || 'New password does not meet security requirements.');
+    }
+
+    // 5. Hash new password with bcrypt (10 rounds)
+    const newHashedPassword = await hashPassword(input.newPassword);
+    principal.hashed_password = newHashedPassword;
+
+    if (this.dbClient) {
+      try {
+        await this.dbClient.query(
+          `UPDATE security.principals SET hashed_password = $1 WHERE principal_id = $2;`,
+          [newHashedPassword, principal.principal_id]
+        );
+      } catch {
+        // Continue
+      }
+    }
+
+    // 6. Invalidate ALL existing refresh tokens for that principal (force re-authentication on other sessions)
+    let invalidatedCount = 0;
+    const nowIso = new Date().toISOString();
+    for (const record of AuthService.inMemoryRefreshTokens.values()) {
+      if (record.principal_id === principal.principal_id && !record.revoked_at) {
+        record.revoked_at = nowIso;
+        invalidatedCount++;
+      }
+    }
+
+    if (this.dbClient) {
+      try {
+        await this.dbClient.query(
+          `UPDATE security.refresh_tokens SET revoked_at = now() WHERE principal_id = $1 AND revoked_at IS NULL;`,
+          [principal.principal_id]
+        );
+      } catch {
+        // Continue
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Password successfully updated. All prior refresh tokens and active sessions have been invalidated.',
+      principalId: principal.principal_id,
+      invalidatedSessionsCount: invalidatedCount,
+    };
   }
 }

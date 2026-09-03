@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
+import crypto from "node:crypto";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { getServerConfig, getPublicConfig, getOptionalProviderStatus } from "../../packages/config/src/index.ts";
@@ -149,7 +150,7 @@ async function startServer() {
 
   const authService = new AuthService(dbClient);
   const platformAuditService = new PlatformAuditService(dbClient);
-  const rateLimiterEngine = new RateLimiterEngine();
+  const rateLimiterEngine = new RateLimiterEngine({ dbClient });
   const csrfProtectionEngine = new CsrfProtectionEngine();
   const diagnosticService = new DiagnosticService(dbClient);
   // Seed sample real control plane records for initial diagnostic inspection
@@ -295,6 +296,78 @@ async function startServer() {
     }
   });
 
+  app.post("/api/auth/change-password", async (req: Request, res: Response) => {
+    try {
+      if (!req.principal || !req.principal.is_authenticated || req.principal.roles.includes('anonymous')) {
+        return res.status(401).json({
+          error: "Unauthorized: Valid authenticated session token required (Authorization: Bearer <token>).",
+          authenticated: false,
+        });
+      }
+
+      const { currentPassword, newPassword, current_password, new_password } = req.body || {};
+      const currentPass = currentPassword || current_password;
+      const newPass = newPassword || new_password;
+
+      if (!currentPass || !newPass) {
+        return res.status(400).json({
+          error: "Missing required fields: current_password and new_password.",
+        });
+      }
+
+      const result = await authService.changePassword({
+        principalId: req.principal.principal_id,
+        currentPassword: currentPass,
+        newPassword: newPass,
+      });
+
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal.principal_id,
+        action: 'AUTHENTICATION_PASSWORD_CHANGED',
+        target_entity_type: 'PRINCIPAL',
+        target_entity_id: req.principal.principal_id,
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: {
+          invalidated_sessions_count: result.invalidatedSessionsCount,
+          reason: 'Self-service cryptographic password rotation',
+        },
+      });
+
+      return res.json(result);
+    } catch (err: any) {
+      const errorMessage = err.message || "Failed to change password.";
+      const status = errorMessage.includes("Incorrect current password") || errorMessage.includes("Unauthorized")
+        ? 401
+        : 400;
+      return res.status(status).json({ error: errorMessage });
+    }
+  });
+
+  // Seeded Quick-Login Accounts for Dev/Test Environments (Emails only, strictly disabled in production)
+  app.get("/api/auth/dev-seed-accounts", (_req: Request, res: Response) => {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(404).json({ error: "Endpoint disabled in production environment.", accounts: [] });
+    }
+    return res.json({
+      accounts: [
+        {
+          email: "admin@caim.internal",
+          role: "admin",
+          label: "Admin Account",
+          description: "Platform Administration"
+        },
+        {
+          email: "auditor@caim.internal",
+          role: "auditor",
+          label: "Auditor Account",
+          description: "Security & Assurance Auditing"
+        }
+      ]
+    });
+  });
+
   // Health and System Baseline APIs
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -351,6 +424,16 @@ async function startServer() {
   app.post("/api/v1/audit/override", async (req, res) => {
     try {
       if (!req.principal) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: 'anonymous',
+          action: 'POLICY_OVERRIDDEN',
+          target_entity_type: 'VAULT_SECRET',
+          target_entity_id: req.body?.target_resource_id || 'res_vault_override',
+          outcome: 'DENIED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: 'Unauthorized principal' },
+        });
         return res.status(401).json({ error: "Unauthorized" });
       }
       const { justification, target_resource_id, action, target_resource_type } = req.body;
@@ -379,8 +462,33 @@ async function startServer() {
         }
       );
 
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal.principal_id,
+        action: 'POLICY_OVERRIDDEN',
+        target_entity_type: target_resource_type || 'VAULT_SECRET',
+        target_entity_id: target_resource_id || 'res_vault_override',
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: {
+          action: action || 'MANUAL_INSPECTION',
+          justification: justification || '',
+          target_resource_type: target_resource_type || 'VAULT_SECRET',
+        },
+      });
+
       return res.json(result);
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'POLICY_OVERRIDDEN',
+        target_entity_type: req.body?.target_resource_type || 'VAULT_SECRET',
+        target_entity_id: req.body?.target_resource_id || 'unknown',
+        outcome: 'REFUSED',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       return res.status(400).json({ error: err.message });
     }
   });
@@ -571,11 +679,15 @@ async function startServer() {
 
       // 2. Insert Agent Version in core.agent_versions
       const agentVersionId = generateUuid();
-      const rawFingerprint = `fp-${name}-${vLabel}-${Date.now()}`;
+      const contentPayload = (files && Array.isArray(files) && files.length > 0)
+        ? files.map((f: any) => `${f.path}:${f.content}`).join('\n')
+        : (manifestContent || `${name}:${vLabel}:${locator}`);
+      const contentHash = `sha256:${crypto.createHash('sha256').update(contentPayload).digest('hex')}`;
+
       await dbClient.query(`
         INSERT INTO core.agent_versions (agent_version_id, agent_id, version_label, content_fingerprint, source_commit, created_at)
         VALUES ($1, $2, $3, $4, $5, NOW());
-      `, [agentVersionId, agentId, vLabel, rawFingerprint, locator]);
+      `, [agentVersionId, agentId, vLabel, contentHash, locator]);
 
       // 3. Find active workflow definition
       const wfDefRes = await dbClient.query(`SELECT workflow_definition_id FROM ops.workflow_definitions LIMIT 1;`);
@@ -801,12 +913,35 @@ export async function fetchContext(q: string) {
         }
       });
 
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: agentVersionId,
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        correlation_id: correlationId,
+        details: {
+          agent_id: agentId,
+          canonical_name: name,
+          version_label: vLabel,
+          content_hash: contentHash,
+          source_locator: locator,
+          overall_score: decisionResult.score_result.overall_score,
+          risk_band: decisionResult.score_result.risk_band,
+          policy_outcome: decisionResult.policy_decision.outcome,
+        },
+      });
+
       res.json({
         success: true,
         agent_id: agentId,
         agent_version_id: agentVersionId,
         canonical_name: name,
         version_label: vLabel,
+        content_hash: contentHash,
+        content_fingerprint: contentHash,
         framework: framework || 'Node.js/TypeScript',
         author: author || 'Community Contributor',
         description: description || 'Autonomous Agent Analyzed via CAIM Assurance Platform',
@@ -832,6 +967,16 @@ export async function fetchContext(q: string) {
 
     } catch (err: any) {
       console.error("[Ingestion Submit Error]:", err);
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'CANONICAL_AGENT',
+        target_entity_id: req.body?.canonicalName || 'unknown-agent',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to submit agent for ingestion" });
     }
   });
@@ -842,6 +987,16 @@ export async function fetchContext(q: string) {
       const { agentId, agentVersionId, scoringModelId, policyId, sourceFiles } = req.body || {};
 
       if (!agentId || !agentVersionId) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: req.principal?.principal_id || 'operator',
+          action: 'ANALYSIS_TRIGGERED',
+          target_entity_type: 'AGENT_VERSION',
+          target_entity_id: agentVersionId || 'unknown',
+          outcome: 'REFUSED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: "Missing agentId or agentVersionId parameter" },
+        });
         return res.status(400).json({ error: "Missing agentId or agentVersionId parameter" });
       }
 
@@ -932,6 +1087,27 @@ export function handleRequest(query: string) {
       await dbClient.query(`UPDATE ops.job_attempts SET completed_at = NOW() WHERE job_attempt_id = $1;`, [attemptId]);
       await dbClient.query(`UPDATE ops.workflow_runs SET status = 'COMPLETED', completed_at = NOW() WHERE workflow_run_id = $1;`, [workflowRunId]);
 
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'ANALYSIS_TRIGGERED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: agentVersionId,
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        correlation_id: correlationId,
+        details: {
+          agent_id: agentId,
+          agent_version_id: agentVersionId,
+          analysis_run_id: analysisRunId,
+          workflow_run_id: workflowRunId,
+          overall_score: decisionResult.score_result.overall_score,
+          risk_band: decisionResult.score_result.risk_band,
+          policy_outcome: decisionResult.policy_decision.outcome,
+          findings_count: staticReport.findings.length,
+        },
+      });
+
       res.json({
         success: true,
         agent_id: agentId,
@@ -956,6 +1132,16 @@ export function handleRequest(query: string) {
 
     } catch (err: any) {
       console.error("[Analysis Trigger Error]:", err);
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'ANALYSIS_TRIGGERED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: req.body?.agentVersionId || 'unknown',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to trigger analysis run" });
     }
   });
@@ -1142,8 +1328,32 @@ export function handleRequest(query: string) {
         maxCandidatesTotal: maxCandidatesTotal || 20,
         correlationId,
       });
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'DISCOVERY_PIPELINE_TRIGGERED',
+        target_entity_type: 'DISCOVERY_SOURCES',
+        target_entity_id: 'dev_discovery_run',
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        correlation_id: correlationId,
+        details: {
+          candidates_discovered: report.totalCandidates || (report.packages?.length || 0),
+          status: report.status,
+        },
+      });
       res.json(report);
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'operator',
+        action: 'DISCOVERY_PIPELINE_TRIGGERED',
+        target_entity_type: 'DISCOVERY_SOURCES',
+        target_entity_id: 'dev_discovery_run',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Discovery execution failed" });
     }
   });
@@ -1725,6 +1935,16 @@ export function runMcpQuery(queryText: string) {
 
       res.json(override);
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || req.body?.approver_id || 'operator',
+        action: 'SCORING_OVERRIDDEN',
+        target_entity_type: 'POLICY_DECISION',
+        target_entity_id: req.body?.analysisRunId || req.body?.analysis_run_id || 'analysis-run',
+        outcome: 'REFUSED',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err), payload: req.body },
+      });
       res.status(400).json({ error: err.message });
     }
   });
@@ -2048,11 +2268,31 @@ export function runMcpQuery(queryText: string) {
   app.post("/api/composer/generate", async (req: Request, res: Response) => {
     try {
       if (!req.principal || !req.principal.is_authenticated) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: 'anonymous',
+          action: 'COMPOSER_GENERATION_TRIGGERED',
+          target_entity_type: 'COMPOSER_ARTIFACT',
+          target_entity_id: 'unauthenticated',
+          outcome: 'DENIED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: 'Authentication required' },
+        });
         return res.status(401).json({ error: "Authentication required." });
       }
 
       const { technique_category, prompt, target_name, target_language, parameters } = req.body || {};
       if (!technique_category || !prompt) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: req.principal.principal_id,
+          action: 'COMPOSER_GENERATION_TRIGGERED',
+          target_entity_type: 'COMPOSER_ARTIFACT',
+          target_entity_id: 'invalid_params',
+          outcome: 'REFUSED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: 'Missing required fields: technique_category and prompt.' },
+        });
         return res.status(400).json({ error: "Missing required fields: technique_category and prompt." });
       }
 
@@ -2105,8 +2345,28 @@ export function runMcpQuery(queryText: string) {
       });
     } catch (err: any) {
       if (err instanceof UnauthorizedAccessError) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: req.principal?.principal_id || 'anonymous',
+          action: 'COMPOSER_GENERATION_TRIGGERED',
+          target_entity_type: 'COMPOSER_ARTIFACT',
+          target_entity_id: 'unauthorized_capability',
+          outcome: 'DENIED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: err.message },
+        });
         return res.status(403).json({ error: err.message });
       }
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'COMPOSER_GENERATION_TRIGGERED',
+        target_entity_type: 'COMPOSER_ARTIFACT',
+        target_entity_id: 'error',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       return res.status(500).json({ error: err.message });
     }
   });
@@ -2154,6 +2414,16 @@ export function runMcpQuery(queryText: string) {
   app.post("/api/composer/execute", async (req: Request, res: Response) => {
     try {
       if (!req.principal || !req.principal.is_authenticated) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: 'anonymous',
+          action: 'COMPOSER_EXECUTION_TRIGGERED',
+          target_entity_type: 'COMPOSER_ARTIFACT',
+          target_entity_id: 'unauthenticated',
+          outcome: 'DENIED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: 'Authentication required' },
+        });
         return res.status(401).json({ error: "Authentication required." });
       }
 
@@ -2222,8 +2492,28 @@ export function runMcpQuery(queryText: string) {
       });
     } catch (err: any) {
       if (err instanceof UnauthorizedAccessError) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: req.principal?.principal_id || 'anonymous',
+          action: 'COMPOSER_EXECUTION_TRIGGERED',
+          target_entity_type: 'COMPOSER_ARTIFACT',
+          target_entity_id: 'unauthorized_capability',
+          outcome: 'DENIED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: err.message },
+        });
         return res.status(403).json({ error: err.message });
       }
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'COMPOSER_EXECUTION_TRIGGERED',
+        target_entity_type: 'COMPOSER_ARTIFACT',
+        target_entity_id: 'error',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       return res.status(500).json({ error: err.message });
     }
   });
@@ -2713,11 +3003,15 @@ export function runMcpQuery(queryText: string) {
 
       // 2. Insert Agent Version in core.agent_versions
       const agentVersionId = generateUuid();
-      const rawFingerprint = `fp-${name}-${vLabel}-${Date.now()}`;
+      const contentPayload = (files && Array.isArray(files) && files.length > 0)
+        ? files.map((f: any) => `${f.path}:${f.content}`).join('\n')
+        : (manifestContent || `${name}:${vLabel}:${locator}`);
+      const contentHash = `sha256:${crypto.createHash('sha256').update(contentPayload).digest('hex')}`;
+
       await dbClient.query(`
         INSERT INTO core.agent_versions (agent_version_id, agent_id, version_label, content_fingerprint, source_commit, created_at)
         VALUES ($1, $2, $3, $4, $5, NOW());
-      `, [agentVersionId, agentId, vLabel, rawFingerprint, locator]);
+      `, [agentVersionId, agentId, vLabel, contentHash, locator]);
 
       // 3. Find active workflow definition
       const wfDefRes = await dbClient.query(`SELECT workflow_definition_id FROM ops.workflow_definitions LIMIT 1;`);
@@ -2812,12 +3106,35 @@ export function runMcpQuery(queryText: string) {
       await dbClient.query(`UPDATE ops.job_attempts SET completed_at = NOW() WHERE job_attempt_id = $1;`, [attemptId]);
       await dbClient.query(`UPDATE ops.workflow_runs SET status = 'COMPLETED', completed_at = NOW() WHERE workflow_run_id = $1;`, [workflowRunId]);
 
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'product-user',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: agentVersionId,
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        correlation_id: correlationId,
+        details: {
+          agent_id: agentId,
+          canonical_name: name,
+          version_label: vLabel,
+          content_hash: contentHash,
+          source_locator: locator,
+          overall_score: decisionResult.score_result.overall_score,
+          risk_band: decisionResult.score_result.risk_band,
+          policy_outcome: decisionResult.policy_decision.outcome,
+        },
+      });
+
       res.json({
         success: true,
         agent_id: agentId,
         agent_version_id: agentVersionId,
         canonical_name: name,
         version_label: vLabel,
+        content_hash: contentHash,
+        content_fingerprint: contentHash,
         framework: framework || 'Node.js/TypeScript',
         author: author || 'Community Contributor',
         description: description || 'Autonomous Agent Analyzed via CAIM Assurance Platform',
@@ -2842,6 +3159,16 @@ export function runMcpQuery(queryText: string) {
       });
     } catch (err: any) {
       console.error("[Product Ingest Error]:", err);
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'product-user',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'CANONICAL_AGENT',
+        target_entity_id: req.body?.canonicalName || 'unknown-agent',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to submit agent for ingestion" });
     }
   };
@@ -2928,28 +3255,57 @@ export function runMcpQuery(queryText: string) {
   app.post("/api/agents/:agentId/versions", requireProductUserAccess, async (req: Request, res: Response) => {
     try {
       const { agentId } = req.params;
-      const { versionLabel, sourceLocator, securityClassification } = req.body || {};
+      const { versionLabel, sourceLocator, securityClassification, manifestContent } = req.body || {};
       const vLabel = versionLabel || `v1.${Date.now().toString().slice(-2)}.0`;
       const agentVersionId = generateUuid();
-      const rawFingerprint = `fp-${agentId}-${vLabel}-${Date.now()}`;
       const locator = sourceLocator || `github://caim-org/${agentId}?tag=${vLabel}`;
+      const contentPayload = manifestContent || `${agentId}:${vLabel}:${locator}`;
+      const contentHash = `sha256:${crypto.createHash('sha256').update(contentPayload).digest('hex')}`;
 
       await dbClient.query(`
         INSERT INTO core.agent_versions (agent_version_id, agent_id, version_label, content_fingerprint, source_commit, created_at)
         VALUES ($1, $2, $3, $4, $5, NOW());
-      `, [agentVersionId, agentId, vLabel, rawFingerprint, locator]);
+      `, [agentVersionId, agentId, vLabel, contentHash, locator]);
+
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'product-user',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: agentVersionId,
+        outcome: 'SUCCESS',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: {
+          agent_id: agentId,
+          version_label: vLabel,
+          content_hash: contentHash,
+          source_locator: locator,
+        },
+      });
 
       res.json({
         success: true,
         agent_version_id: agentVersionId,
         agent_id: agentId,
         version_label: vLabel,
+        content_hash: contentHash,
+        content_fingerprint: contentHash,
         source_locator: locator,
         security_classification: securityClassification || 'INTERNAL',
         status: 'ACTIVE',
         created_at: new Date().toISOString(),
       });
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'product-user',
+        action: 'AGENT_INGESTED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: req.params.agentId || 'unknown',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to register agent version" });
     }
   });
@@ -2960,7 +3316,68 @@ export function runMcpQuery(queryText: string) {
       const { agentId, agentVersionId, scoringModelId, policyId, sourceFiles } = req.body || {};
 
       if (!agentId || !agentVersionId) {
+        await platformAuditService.recordAuditEntry({
+          principal_id: req.principal?.principal_id || 'anonymous',
+          action: 'ANALYSIS_TRIGGERED',
+          target_entity_type: 'AGENT_VERSION',
+          target_entity_id: 'missing_params',
+          outcome: 'REFUSED',
+          client_ip: req.ip,
+          user_agent: req.headers['user-agent'] as string,
+          details: { error: "Missing agentId or agentVersionId parameter" },
+        });
         return res.status(400).json({ error: "Missing agentId or agentVersionId parameter" });
+      }
+
+      // Ensure canonical agent exists in DB
+      const isAgentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId);
+      let existingAgentRes;
+      if (isAgentUuid) {
+        existingAgentRes = await dbClient.query(`
+          SELECT agent_id FROM core.canonical_agents WHERE agent_id = $1 OR lower(canonical_name) = lower($2) LIMIT 1;
+        `, [agentId, agentId]);
+      } else {
+        existingAgentRes = await dbClient.query(`
+          SELECT agent_id FROM core.canonical_agents WHERE lower(canonical_name) = lower($1) LIMIT 1;
+        `, [agentId]);
+      }
+
+      let realAgentId: string;
+      if (existingAgentRes.rows.length > 0) {
+        realAgentId = existingAgentRes.rows[0].agent_id;
+      } else {
+        realAgentId = isAgentUuid ? agentId : generateUuid();
+        await dbClient.query(`
+          INSERT INTO core.canonical_agents (agent_id, canonical_name, status, identity_confidence, created_at, updated_at)
+          VALUES ($1, $2, 'ACTIVE', 0.9800, NOW(), NOW())
+          ON CONFLICT (agent_id) DO NOTHING;
+        `, [realAgentId, agentId]);
+      }
+
+      // Ensure agent version exists in DB
+      const isVerUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentVersionId);
+      let existingVerRes;
+      if (isVerUuid) {
+        existingVerRes = await dbClient.query(`
+          SELECT agent_version_id FROM core.agent_versions WHERE agent_version_id = $1 LIMIT 1;
+        `, [agentVersionId]);
+      } else {
+        existingVerRes = await dbClient.query(`
+          SELECT agent_version_id FROM core.agent_versions WHERE agent_id = $1 AND version_label = $2 LIMIT 1;
+        `, [realAgentId, agentVersionId]);
+      }
+
+      let realAgentVersionId: string;
+      if (existingVerRes.rows.length > 0) {
+        realAgentVersionId = existingVerRes.rows[0].agent_version_id;
+      } else {
+        realAgentVersionId = isVerUuid ? agentVersionId : generateUuid();
+        const vFingerprint = `sha256:${crypto.createHash('sha256').update(`${realAgentId}:${agentVersionId}`).digest('hex')}`;
+        await dbClient.query(`
+          INSERT INTO core.agent_versions (agent_version_id, agent_id, version_label, content_fingerprint, source_commit, created_at)
+          VALUES ($1, $2, $3, $4, 'manual_trigger', NOW())
+          ON CONFLICT (agent_version_id) DO NOTHING;
+        `, [realAgentVersionId, realAgentId, isVerUuid ? 'v1.0.0' : agentVersionId, vFingerprint]);
       }
 
       const wfDefRes = await dbClient.query(`SELECT workflow_definition_id FROM ops.workflow_definitions LIMIT 1;`);
@@ -3118,7 +3535,7 @@ export function handleRequest(query: string) {
         ) VALUES (
           $1, $2, '00000000-0000-0000-0000-000000000001', '2.0.1', '2.0.1', 'v2.0.1', 'MANUAL', 'COMPLETED', NOW(), NOW(), NOW()
         );
-      `, [analysisRunId, agentVersionId]);
+      `, [analysisRunId, realAgentVersionId]);
 
       await dbClient.query(`UPDATE ops.jobs SET status = 'COMPLETED' WHERE job_id = $1;`, [jobId]);
       await dbClient.query(`UPDATE ops.job_attempts SET completed_at = NOW() WHERE job_attempt_id = $1;`, [attemptId]);
@@ -3129,14 +3546,14 @@ export function handleRequest(query: string) {
         principal_id: req.principal?.principal_id || 'anonymous',
         action: 'ANALYSIS_TRIGGERED',
         target_entity_type: 'AGENT_VERSION',
-        target_entity_id: agentVersionId,
+        target_entity_id: realAgentVersionId,
         outcome: 'SUCCESS',
         client_ip: req.ip,
         user_agent: req.headers['user-agent'] as string,
         correlation_id: correlationId,
         details: {
-          agent_id: agentId,
-          agent_version_id: agentVersionId,
+          agent_id: realAgentId,
+          agent_version_id: realAgentVersionId,
           analysis_run_id: analysisRunId,
           workflow_run_id: workflowRunId,
           overall_score: decisionResult.score_result?.overall_score,
@@ -3148,8 +3565,8 @@ export function handleRequest(query: string) {
 
       res.json({
         success: true,
-        agent_id: agentId,
-        agent_version_id: agentVersionId,
+        agent_id: realAgentId,
+        agent_version_id: realAgentVersionId,
         workflow_run_id: workflowRunId,
         job_id: jobId,
         analysis_run_id: analysisRunId,
@@ -3172,6 +3589,16 @@ export function handleRequest(query: string) {
 
     } catch (err: any) {
       console.error("[Product Analysis Trigger Error]:", err);
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'ANALYSIS_TRIGGERED',
+        target_entity_type: 'AGENT_VERSION',
+        target_entity_id: req.body?.agentVersionId || 'unknown',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to trigger analysis run" });
     }
   };
@@ -3209,6 +3636,16 @@ export function handleRequest(query: string) {
 
       res.json(report);
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'DISCOVERY_RUN',
+        target_entity_type: 'DISCOVERY_PIPELINE',
+        target_entity_id: req.body?.correlationId || 'disc-failed',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Discovery execution failed" });
     }
   };
@@ -3248,12 +3685,13 @@ export function handleRequest(query: string) {
 
         // 2. Insert Version in core.agent_versions
         const agentVersionId = generateUuid();
-        const rawFingerprint = `fp-${canonicalName.toLowerCase()}-${vLabel}-${Date.now().toString(36)}`;
+        const rawContent = `${canonicalName}:${vLabel}:${candidate.source_type}:${locator}`;
+        const contentHash = `sha256:${crypto.createHash('sha256').update(rawContent).digest('hex')}`;
         await dbClient.query(`
           INSERT INTO core.agent_versions (agent_version_id, agent_id, version_label, content_fingerprint, source_commit, created_at)
           VALUES ($1, $2, $3, $4, $5, NOW())
           ON CONFLICT (agent_id, content_fingerprint) DO NOTHING;
-        `, [agentVersionId, agentId, vLabel, rawFingerprint, locator]);
+        `, [agentVersionId, agentId, vLabel, contentHash, locator]);
 
         // 3. Create real static code files based on candidate
         const filesToAnalyze = [
@@ -3427,6 +3865,16 @@ export function handleRequest(query: string) {
 
       res.json({ success: true, ...result });
     } catch (err: any) {
+      await platformAuditService.recordAuditEntry({
+        principal_id: req.principal?.principal_id || 'anonymous',
+        action: 'DISCOVERY_TRIGGERED',
+        target_entity_type: 'DISCOVERY_PIPELINE',
+        target_entity_id: 'trigger-failed',
+        outcome: 'ERROR',
+        client_ip: req.ip,
+        user_agent: req.headers['user-agent'] as string,
+        details: { error: err.message || String(err) },
+      });
       res.status(500).json({ error: err.message || "Failed to trigger discovery cycle" });
     }
   });

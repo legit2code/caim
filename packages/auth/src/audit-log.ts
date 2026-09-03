@@ -10,6 +10,7 @@
  * - Capability Grants & Revocations
  */
 
+import crypto from 'node:crypto';
 import { SecretRedactor } from '../../workflow/src/observability.ts';
 
 export type PlatformAuditAction =
@@ -82,6 +83,15 @@ export interface AuditLogQueryFilters {
   offset?: number;
 }
 
+export function generateSha256Signature(auditId: string, timestamp: string | Date, principalId: string, action: string, outcome: string): string {
+  const normTimestamp = typeof timestamp === 'string' 
+    ? (isNaN(Date.parse(timestamp)) ? timestamp : new Date(timestamp).toISOString())
+    : new Date(timestamp).toISOString();
+  const raw = `${auditId}:${normTimestamp}:${principalId}:${action}:${outcome}`;
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  return `sha256:${hash}`;
+}
+
 export class PlatformAuditService {
   private dbClient?: any;
   // High-reliability in-memory append-only fallback journal
@@ -95,23 +105,12 @@ export class PlatformAuditService {
     this.dbClient = dbClient;
   }
 
-  private generateSha256Signature(auditId: string, timestamp: string, principalId: string, action: string, outcome: string): string {
-    const raw = `${auditId}:${timestamp}:${principalId}:${action}:${outcome}`;
-    let hash = 0;
-    for (let i = 0; i < raw.length; i++) {
-      const char = raw.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash |= 0;
-    }
-    return 'sha256:' + Math.abs(hash).toString(16).padStart(16, '0') + Math.random().toString(36).substring(2, 6);
+  public generateSha256Signature(auditId: string, timestamp: string | Date, principalId: string, action: string, outcome: string): string {
+    return generateSha256Signature(auditId, timestamp, principalId, action, outcome);
   }
 
   private generateUuid(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
+    return crypto.randomUUID();
   }
 
   /**
@@ -235,20 +234,25 @@ export class PlatformAuditService {
         ]);
 
         const total = parseInt(countRes.rows[0]?.total || '0', 10);
-        const logs: PlatformAuditRecord[] = dataRes.rows.map((row: any) => ({
-          audit_id: row.audit_id,
-          principal_id: row.principal_id,
-          action: row.action,
-          target_entity_type: row.target_entity_type,
-          target_entity_id: row.target_entity_id,
-          timestamp: typeof row.timestamp === 'string' ? row.timestamp : new Date(row.timestamp).toISOString(),
-          outcome: row.outcome,
-          client_ip: row.client_ip,
-          user_agent: row.user_agent,
-          correlation_id: row.correlation_id,
-          details: typeof row.details === 'string' ? JSON.parse(row.details) : (row.details || {}),
-          signature_sha256: this.generateSha256Signature(row.audit_id, row.timestamp, row.principal_id, row.action, row.outcome),
-        }));
+        const logs: PlatformAuditRecord[] = dataRes.rows.map((row: any) => {
+          const timestampIso = typeof row.timestamp === 'string' 
+            ? (isNaN(Date.parse(row.timestamp)) ? row.timestamp : new Date(row.timestamp).toISOString())
+            : new Date(row.timestamp).toISOString();
+          return {
+            audit_id: row.audit_id,
+            principal_id: row.principal_id,
+            action: row.action,
+            target_entity_type: row.target_entity_type,
+            target_entity_id: row.target_entity_id,
+            timestamp: timestampIso,
+            outcome: row.outcome,
+            client_ip: row.client_ip,
+            user_agent: row.user_agent,
+            correlation_id: row.correlation_id,
+            details: typeof row.details === 'string' ? JSON.parse(row.details) : (row.details || {}),
+            signature_sha256: this.generateSha256Signature(row.audit_id, timestampIso, row.principal_id, row.action, row.outcome),
+          };
+        });
 
         return { logs, total, limit, offset };
       } catch (err: any) {

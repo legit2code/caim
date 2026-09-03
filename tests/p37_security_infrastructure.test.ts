@@ -6,7 +6,10 @@ import {
   CsrfProtectionEngine,
   createRateLimiterMiddleware,
   createCsrfProtectionMiddleware,
-  SecurityClassificationRank
+  SecurityClassificationRank,
+  PostgresRateLimitStore,
+  SharedInMemoryRateLimitStore,
+  RATE_LIMIT_TIERS
 } from '../packages/auth/src/index.ts';
 
 describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Logging', () => {
@@ -22,12 +25,12 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
     await dbClient.connect();
 
     auditService = new PlatformAuditService(dbClient);
-    rateLimiter = new RateLimiterEngine();
+    rateLimiter = new RateLimiterEngine({ dbClient });
     csrfEngine = new CsrfProtectionEngine();
   });
 
   describe('1. Rate Limiting Engine (Per-Principal & Tiered Routes)', () => {
-    it('should distinguish caller key per-authenticated-principal and apply tiered limits', () => {
+    it('should distinguish caller key per-authenticated-principal and apply tiered limits', async () => {
       const regularReq = {
         path: '/api/library/agents',
         method: 'GET',
@@ -40,7 +43,7 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
         headers: {},
       } as any;
 
-      const regularCheck = rateLimiter.checkLimit(regularReq);
+      const regularCheck = await rateLimiter.checkLimit(regularReq);
       expect(regularCheck.allowed).toBe(true);
       expect(regularCheck.callerKey).toBe('principal:user-alice');
       expect(regularCheck.limit).toBe(120); // Standard route tier
@@ -57,13 +60,13 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
         headers: {},
       } as any;
 
-      const expensiveCheck = rateLimiter.checkLimit(expensiveReq);
+      const expensiveCheck = await rateLimiter.checkLimit(expensiveReq);
       expect(expensiveCheck.allowed).toBe(true);
       expect(expensiveCheck.tierName).toBe('COMPOSER_EXECUTE');
       expect(expensiveCheck.limit).toBe(10); // Heavy execution tier
     });
 
-    it('should block requests exceeding the tier allowance with 429 semantics', () => {
+    it('should block requests exceeding the tier allowance with 429 semantics', async () => {
       const principal = 'user-spammer';
       const genReq = {
         path: '/api/composer/generate',
@@ -77,18 +80,18 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
 
       // Fill the expensive bucket (limit: 5 for COMPOSER_GENERATE)
       for (let i = 0; i < 5; i++) {
-        const res = rateLimiter.checkLimit(genReq);
+        const res = await rateLimiter.checkLimit(genReq);
         expect(res.allowed).toBe(true);
       }
 
       // 6th request must be denied
-      const deniedRes = rateLimiter.checkLimit(genReq);
+      const deniedRes = await rateLimiter.checkLimit(genReq);
       expect(deniedRes.allowed).toBe(false);
       expect(deniedRes.remaining).toBe(0);
       expect(deniedRes.retryAfterSeconds).toBeGreaterThan(0);
     });
 
-    it('should isolate rate limits across distinct principals so one user cannot starve another', () => {
+    it('should isolate rate limits across distinct principals so one user cannot starve another', async () => {
       const reqA = {
         path: '/api/analysis/trigger',
         method: 'POST',
@@ -104,19 +107,19 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
       } as any;
 
       for (let i = 0; i < 10; i++) {
-        rateLimiter.checkLimit(reqA);
+        await rateLimiter.checkLimit(reqA);
       }
 
-      const blockedA = rateLimiter.checkLimit(reqA);
+      const blockedA = await rateLimiter.checkLimit(reqA);
       expect(blockedA.allowed).toBe(false);
 
       // User B must still be allowed
-      const allowedB = rateLimiter.checkLimit(reqB);
+      const allowedB = await rateLimiter.checkLimit(reqB);
       expect(allowedB.allowed).toBe(true);
     });
 
-    it('should fallback to IP-scoped buckets for unauthenticated principals', () => {
-      const check = rateLimiter.checkLimit({
+    it('should fallback to IP-scoped buckets for unauthenticated principals', async () => {
+      const check = await rateLimiter.checkLimit({
         path: '/api/auth/login',
         method: 'POST',
         principal: undefined,
@@ -125,6 +128,76 @@ describe('P37 Security Infrastructure: Rate Limiting, CSRF Defense & Audit Loggi
       } as any);
       expect(check.allowed).toBe(true);
       expect(check.callerKey).toContain('ip:10.0.0.99');
+    });
+
+    it('should enforce a shared combined rate limit across two separate simulated server instances (PostgreSQL backing store)', async () => {
+      // Create two separate server instances sharing the exact same PostgreSQL database
+      const serverInstance1 = new RateLimiterEngine({ dbClient });
+      const serverInstance2 = new RateLimiterEngine({ dbClient });
+
+      const principalId = 'user-loadbalancer-test';
+      const expensiveRequest = {
+        path: '/api/composer/generate',
+        method: 'POST',
+        principal: { principal_id: principalId, is_authenticated: true },
+        headers: {},
+      } as any;
+
+      // Tier limit for COMPOSER_GENERATE is 5 requests per window
+      // Send 3 requests through Server Instance 1
+      for (let i = 0; i < 3; i++) {
+        const res = await serverInstance1.checkLimit(expensiveRequest);
+        expect(res.allowed).toBe(true);
+      }
+
+      // Send 2 requests through Server Instance 2 (total 5 requests across both instances)
+      for (let i = 0; i < 2; i++) {
+        const res = await serverInstance2.checkLimit(expensiveRequest);
+        expect(res.allowed).toBe(true);
+      }
+
+      // 6th request sent to Server Instance 1 must be blocked (shared limit exhausted!)
+      const blocked1 = await serverInstance1.checkLimit(expensiveRequest);
+      expect(blocked1.allowed).toBe(false);
+      expect(blocked1.remaining).toBe(0);
+
+      // 7th request sent to Server Instance 2 must also be blocked
+      const blocked2 = await serverInstance2.checkLimit(expensiveRequest);
+      expect(blocked2.allowed).toBe(false);
+      expect(blocked2.remaining).toBe(0);
+    });
+
+    it('should enforce a shared combined rate limit across two separate simulated server instances (Shared store)', async () => {
+      const sharedStore = new SharedInMemoryRateLimitStore();
+      const serverA = new RateLimiterEngine({ store: sharedStore });
+      const serverB = new RateLimiterEngine({ store: sharedStore });
+
+      const request = {
+        path: '/api/composer/execute',
+        method: 'POST',
+        principal: { principal_id: 'shared-user-01', is_authenticated: true },
+        headers: {},
+      } as any;
+
+      // Tier limit for COMPOSER_EXECUTE is 10 requests per window
+      // Send 6 requests to Server A
+      for (let i = 0; i < 6; i++) {
+        const res = await serverA.checkLimit(request);
+        expect(res.allowed).toBe(true);
+      }
+
+      // Send 4 requests to Server B (reaches combined 10)
+      for (let i = 0; i < 4; i++) {
+        const res = await serverB.checkLimit(request);
+        expect(res.allowed).toBe(true);
+      }
+
+      // 11th request on Server A or Server B must be blocked
+      const checkA = await serverA.checkLimit(request);
+      expect(checkA.allowed).toBe(false);
+
+      const checkB = await serverB.checkLimit(request);
+      expect(checkB.allowed).toBe(false);
     });
   });
 
